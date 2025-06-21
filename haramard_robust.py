@@ -23,8 +23,8 @@ def schrodinger_rhs(t, psi, H):
     return -1j * H.dot(psi)
 
 # Fixed pulse phases from optimizer
-phi_list =[6.168583, 2.075657, 0.878826, 2.576394, 5.741978, 4.636668, 6.955457, 5.046248, 5.458592, 1.572531, 0.618, 4.36956, 0]
-
+phi = [3.864738173689102, 0.2565983147674805, 1.7094730858086657, 4.925178395210474, 0.7460716091347271, 2.0142139997185433, 2.324948223685373, 1.9518937578324786, 5.2101190190926685, 0.08421968698429469, 5.823308477226751, 0.2609984202122077, 0]
+omega_0 = 1.425738
 # Sweep epsilon values (fractional deviation)
 epsilons = np.linspace(-0.2, 0.2, 41)
 fidelities = []
@@ -43,8 +43,8 @@ for idx, eps in enumerate(epsilons):
     psi = psi0.copy()
 
     # apply each pulse with area = (π/2)*(1+ε)
-    for ph in phi_list:
-        omega = (np.pi/2) * (1 + eps)
+    for ph in phi:
+        omega = omega_0 * (1 + eps)
         H = H_rwa(omega, ph)
         sol = solve_ivp(
             schrodinger_rhs,
@@ -72,6 +72,7 @@ plt.plot(epsilons, fidelities, '-o')
 plt.axhline(1.0, color='k', linestyle='--', linewidth=1)
 plt.xlabel('Fractional pulse-area deviation ε')
 plt.ylabel('Fidelity to H |0>')
+plt.ylim(0.95, 1)
 plt.title('Composite Pulse Fidelity vs. Area Error')
 plt.grid(True)
 plt.tight_layout()

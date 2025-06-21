@@ -18,8 +18,9 @@ def schrodinger_rhs(t, psi, H):
 
 # Define sequence of pulses: list of (Omega, phi)
 # Modify this list with your desired Rabi frequencies and phases
-phi = [6.168583, 2.075657, 0.878826, 2.576394, 5.741978, 4.636668, 6.955457, 5.046248, 5.458592, 1.572531, 0.618, 4.36956, 0]
-areas = [np.pi/2] * len(phi)
+phi = [3.864738173689102, 0.2565983147674805, 1.7094730858086657, 4.925178395210474, 0.7460716091347271, 2.0142139997185433, 2.324948223685373, 1.9518937578324786, 5.2101190190926685, 0.08421968698429469, 5.823308477226751, 0.2609984202122077, 0]
+omega_0 = 1.425738
+areas = [omega_0] * len(phi)
 pulse_sequence = zip(areas, phi)
 pulse_duration = 1.0  # Duration of each pulse
 points_per_pulse = 200  # Time resolution within each pulse
