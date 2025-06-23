@@ -16,7 +16,7 @@ def construct_transmon_hamiltonian_charge_basis(n_charge=30, EJ_EC_ratio=50):
         n = i - n_charge
         H_charge[i, i] = 4 * n ** 2  # In units of EC
 
-    # Off‑diagonal: Josephson tunnelling
+    # Off-diagonal: Josephson tunnelling
     EJ = EJ_EC_ratio  # In units of EC
     for i in range(n_states - 1):
         H_charge[i, i + 1] = -EJ / 2
@@ -105,7 +105,7 @@ def compute_transmon_parameters(n_levels=6, n_charge=30, target_anharmonicity=-0
     return energies, np.real(lambdas_full)
 
 # -----------------------------------------------------------------------------
-# NEW: pulse‑envelope helpers (only addition requested by user)
+# NEW: pulse-envelope helpers
 # -----------------------------------------------------------------------------
 
 def _base_envelope(t, pulse_idx, pulse_duration, pulse_type="square"):
@@ -123,10 +123,9 @@ def _base_envelope(t, pulse_idx, pulse_duration, pulse_type="square"):
 
 
 def drive_envelope_array(times, rabi_frequencies, pulse_duration, pulse_type="square"):
-    """Vectorised version that multiplies the unit envelope by the pulse‑specific
+    """Vectorised version that multiplies the unit envelope by the pulse-specific
     Rabi frequency.  Returns an array of Ω_R(t) in the same units as
-    `rabi_frequencies`.
-    """
+    `rabi_frequencies`."""
     env = np.zeros_like(times, dtype=float)
     n_pulses = len(rabi_frequencies)
     for i, t in enumerate(times):
@@ -137,6 +136,7 @@ def drive_envelope_array(times, rabi_frequencies, pulse_duration, pulse_type="sq
         )
     return env
 
+# -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # Dynamics
 # -----------------------------------------------------------------------------
@@ -150,23 +150,21 @@ def simulate_transmon_dynamics(
     total_time=20.0,
     n_time_steps=2000,
     pulse_type="square",
+    use_rwa=True,
 ):
     """
-    Simulate using equation (4) with numerically derived parameters.
+    Simulate using equation (4) or the full Eq. (A13) depending on `use_rwa`.
     """
     # Get transmon parameters
     energies, lambdas_full = compute_transmon_parameters(
         n_levels, n_charge=30, target_anharmonicity=-0.3 / 7
     )
 
-    # Extract λj = λ_{j,j-1} for the drive coupling
-    lambdas = np.zeros(n_levels)
-    for j in range(1, n_levels):
-        lambdas[j] = lambdas_full[j, j - 1]
-
-    print(f"\nDrive coupling strengths λ_j:")
-    for j in range(1, min(4, n_levels)):
-        print(f"  λ_{j} = ⟨{j}|n̂|{j-1}⟩ = {lambdas[j]:.4f}")
+    # Extract λj = λ_{j,j-1} (nearest neighbours) only if RWA is used
+    if use_rwa:
+        lambdas = np.zeros(n_levels)
+        for j in range(1, n_levels):
+            lambdas[j] = lambdas_full[j, j - 1]
 
     # Time evolution
     n_pulses = len(rabi_frequencies)
@@ -182,28 +180,35 @@ def simulate_transmon_dynamics(
     for i, t in enumerate(times[:-1]):
         pulse_idx = min(int(t // pulse_duration), n_pulses - 1)
 
-        # ------------------------------
-        # Pulse envelope  (only part the user asked to change)
-        # ------------------------------
+        # Pulse envelope
         envelope = _base_envelope(t, pulse_idx, pulse_duration, pulse_type)
-        # ------------------------------
 
-        # Hamiltonian (equation 4) - MUST BE COMPLEX!
+        # Hamiltonian (equation 4 or A13) - MUST BE COMPLEX!
         H = np.zeros((n_levels, n_levels), dtype=complex)
 
         # Diagonal terms
         for j in range(n_levels):
             H[j, j] = energies[j] - j  # μj = ej - j
 
-        if envelope > 0:
-            omega_R = (
-                rabi_frequencies[pulse_idx]
-                * envelope
-                * np.exp(-1j * phases[pulse_idx])
-            )
+        omega_R = rabi_frequencies[pulse_idx] * envelope
+
+        if use_rwa and omega_R != 0:
+            omega_R *= np.exp(-1j * phases[pulse_idx])
             for j in range(1, n_levels):
                 H[j, j - 1] += lambdas[j] * omega_R / 2
                 H[j - 1, j] += lambdas[j] * np.conj(omega_R) / 2
+
+        elif not use_rwa and omega_R != 0:
+            omega_d = 1.0  # ω_d = ω_01 in our rescaled units
+            exp_drive = np.exp(-1j * (omega_d * t + phases[pulse_idx]))
+
+            # Phase matrix e^{i(j-l)ω_d t}
+            phase_mat = np.exp(
+                1j * omega_d * t * (np.arange(n_levels)[:, None] - np.arange(n_levels))
+            )
+
+            H_drive = lambdas_full * phase_mat  # λ_{j,l} e^{i(j-l)ω_d t}
+            H += omega_R / 2 * (exp_drive * H_drive + np.conj(exp_drive) * H_drive.conj().T)
 
         # Time evolution
         U = expm(-1j * H * dt)
@@ -245,6 +250,7 @@ if __name__ == "__main__":
         total_time=total_time,
         pulse_type="gaussian",
         n_time_steps=5000,
+        use_rwa=False
     )
 
     # Plot
