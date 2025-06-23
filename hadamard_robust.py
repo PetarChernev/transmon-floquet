@@ -23,8 +23,8 @@ def schrodinger_rhs(t, psi, H):
     return -1j * H.dot(psi)
 
 # Fixed pulse phases from optimizer
-phi = [3.864738173689102, 0.2565983147674805, 1.7094730858086657, 4.925178395210474, 0.7460716091347271, 2.0142139997185433, 2.324948223685373, 1.9518937578324786, 5.2101190190926685, 0.08421968698429469, 5.823308477226751, 0.2609984202122077, 0]
-omega_0 = 1.425738
+phi = [4.3754, 4.958, 5.1619, 2.567, 3.1661, 3.9052, 0.0085, 3.5984, 1.4051, 1.9121, 3.8791, 1.7984, 0]
+omega_0 = 1.7857
 # Sweep epsilon values (fractional deviation)
 epsilons = np.linspace(-0.2, 0.2, 41)
 fidelities = []
@@ -38,11 +38,9 @@ psi_target /= np.linalg.norm(psi_target)
 
 total = len(epsilons)
 for idx, eps in enumerate(epsilons):
-    print(f"Progress: {idx+1}/{total}")
     # reset to ground state
     psi = psi0.copy()
 
-    # apply each pulse with area = (π/2)*(1+ε)
     for ph in phi:
         omega = omega_0 * (1 + eps)
         H = H_rwa(omega, ph)
@@ -62,7 +60,6 @@ for idx, eps in enumerate(epsilons):
 
     # fidelity against Hadamard outcome
     fid = np.abs(np.vdot(psi_target, psi))**2
-    print(f"Fidelity for psi={psi}: {fid:.4f}")
     fidelities.append(fid)
 print(psi_target)
 
@@ -72,7 +69,7 @@ plt.plot(epsilons, fidelities, '-o')
 plt.axhline(1.0, color='k', linestyle='--', linewidth=1)
 plt.xlabel('Fractional pulse-area deviation ε')
 plt.ylabel('Fidelity to H |0>')
-plt.ylim(0.95, 1)
+plt.ylim(0.995, 1)
 plt.title('Composite Pulse Fidelity vs. Area Error')
 plt.grid(True)
 plt.tight_layout()
