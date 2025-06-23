@@ -1,226 +1,404 @@
-#!/usr/bin/env python3
-# floquet_multilevel_refactored.py  (July 2025)
-
-from __future__ import annotations
-import math, typing
-from typing import Sequence, Union
 import numpy as np
 import torch
-from torch import Tensor
+import math
 
 from transmon_core import TransmonCore
 
 
-# ============================================================================
-#  Fourier coefficients  of Gaussian × cos  (period 2π)
-# ============================================================================
+def omega_tilde_batch(
+    k, j, l, sign,
+    *,
+    sigma,
+    pulse_period,
+    carrier_period,
+    phi=0.0,
+    rabi_max=1.0,
+    device=None,
+    dtype=torch.complex128,
+):
+    """
+    Return  Omega_tilde^{(k ; j,l, sign)}  for a *single* sign.
+    Shapes:
+        k  :  (H,)      or scalar
+        j,l:  (d,d)     meshgrid
+    Output:
+        coef : (d,d,H)  complex
+    """
+    k   = torch.as_tensor(k, dtype=torch.float64, device=device)
+    j   = torch.as_tensor(j, dtype=torch.float64, device=device)
+    l   = torch.as_tensor(l, dtype=torch.float64, device=device)
+    sgn = float(sign)                                   # ensure Python scalar
 
-def cos_gauss_coeffs(N, sigma, floquet_period, carrier_period, dtype, device):
-    k = torch.arange(-N, N + 1, dtype=torch.float64, device=device)
-    omega_floquet = 2 * math.pi / floquet_period
-    omega_carrier = 2 * math.pi / carrier_period
+    sigma = torch.as_tensor(sigma, dtype=torch.float64, device=device)
+    T_F   = torch.as_tensor(pulse_period, dtype=torch.float64, device=device)
+    T_d   = torch.as_tensor(carrier_period, dtype=torch.float64, device=device)
+    phi   = torch.as_tensor(phi,  dtype=torch.float64, device=device)
+    rabi  = torch.as_tensor(rabi_max, dtype=torch.float64, device=device)
 
-    # Correct Fourier coefficients:
-    # Integral: e^(-t²/(2σ²)) cos(ω_carrier t) exp(-i k ω_floquet t)
-    # => Two Gaussians centered at ± ω_carrier
-    arg1 = sigma * (k * omega_floquet - omega_carrier)
-    arg2 = sigma * (k * omega_floquet + omega_carrier)
+    w_F, w_d = 2 * math.pi / T_F, 2 * math.pi / T_d
+    kappa = (j - l + sgn)[..., None] * w_d - k * w_F        # (d,d,H)
 
-    g1 = torch.exp(-arg1**2 / 2)
-    g2 = torch.exp(-arg2**2 / 2)
+    pref  = 0.5 * torch.exp(-1j * sgn * phi) * rabi
 
-    scale = math.sqrt(2*math.pi)*sigma / floquet_period
-    return scale * 0.5 * (g1 + g2).to(dtype)           # shape: (2 N+1,)
+    g = torch.sqrt(torch.tensor(2 * math.pi, device=device)) * sigma / T_F
+    coef = pref * g * torch.exp(-0.5 * (sigma * kappa) ** 2)
+    coef = coef * torch.exp(-1j * kappa * T_F / 2)
+
+    return coef.to(dtype)                                  # (d,d,H)
+
+# =====================================================================
+#  1.  H^(0)  – choose RWA or full
+# =====================================================================
+def H0_block(
+    mu, Lambda,
+    *,
+    sigma,
+    pulse_period,
+    carrier_period,
+    phi=0.0,
+    rabi_max=1.0,
+    rwa=True,                  # <-- master switch
+    device=None,
+    dtype=torch.complex128,
+):
+    """
+    Build  H^(0)  (static Floquet block).
+      mu      : (d,)   diagonal energies  (already e_j - j*omega_d)
+      Lambda  : (d,d)  coupling matrix    lambda_{j,l}
+    """
+    mu  = torch.as_tensor(mu).to(dtype).to(device)
+    Lam = torch.as_tensor(Lambda).to(dtype).to(device)
+    d   = mu.numel()
+
+    H0 = torch.diag(mu.clone())             # static diagonal
+
+    # drive term(s) at k = 0
+    j, l = torch.meshgrid(
+        torch.arange(d, device=device),
+        torch.arange(d, device=device),
+        indexing="ij",
+    )
+
+    # co-rotating ALWAYS included
+    H_co = omega_tilde_batch(
+        0, j, l, -1,
+        sigma=sigma,
+        pulse_period=pulse_period,
+        carrier_period=carrier_period,
+        phi=phi,
+        rabi_max=rabi_max,
+        device=device,
+        dtype=dtype,
+    ).squeeze(-1)
+
+    H0 = H0 + Lam * H_co
+
+    if not rwa:
+        # add counter-rotating only when NOT in RWA
+        H_ctr = omega_tilde_batch(
+            0, j, l, +1,
+            sigma=sigma,
+            pulse_period=pulse_period,
+            carrier_period=carrier_period,
+            phi=phi,
+            rabi_max=rabi_max,
+            device=device,
+            dtype=dtype,
+        ).squeeze(-1)
+        H0 = H0 + Lam * H_ctr
+
+    # numerical Hermiticity
+    H0 = 0.5 * (H0 + H0.conj().T)
+    return H0
+
+
+# =====================================================================
+#  2.  H^(k)  for k != 0  – choose RWA or full
+# =====================================================================
+def Hk_block(
+    k, Lambda,
+    *,
+    sigma,
+    pulse_period,
+    carrier_period,
+    phi=0.0,
+    rabi_max=1.0,
+    rwa=True,
+    device=None,
+    dtype=torch.complex128,
+):
+    """
+    Build  H^(k)  (k != 0).  Raises if k == 0.
+    """
+    if k == 0:
+        raise ValueError("Use H0_block for k = 0")
+
+    Lam = torch.as_tensor(Lambda).to(dtype).to(device)
+    d   = Lam.shape[0]
+
+    j, l = torch.meshgrid(
+        torch.arange(d, device=device),
+        torch.arange(d, device=device),
+        indexing="ij",
+    )
+
+    # always include co-rotating
+    Hk = Lam * omega_tilde_batch(
+        k, j, l, -1,
+        sigma=sigma,
+        pulse_period=pulse_period,
+        carrier_period=carrier_period,
+        phi=phi,
+        rabi_max=rabi_max,
+        device=device,
+        dtype=dtype,
+    ).squeeze(-1)
+
+    if not rwa:
+        Hk = Hk + Lam * omega_tilde_batch(
+            k, j, l, +1,
+            sigma=sigma,
+            pulse_period=pulse_period,
+            carrier_period=carrier_period,
+            phi=phi,
+            rabi_max=rabi_max,
+            device=device,
+            dtype=dtype,
+        ).squeeze(-1)
+
+    return Hk
 
 
 
-# ============================================================================
-#  Single-pulse Floquet operator
-# ============================================================================
+def build_sambe(mu, Lambda, L, *,
+                sigma, pulse_period, carrier_period,
+                phi=0.0, rabi_max=1.0, rwa=True,
+                device=None, dtype=torch.complex128):
+    mu = torch.as_tensor(mu, dtype=dtype, device=device)
+    d = mu.numel()
+    Q = torch.zeros(((2*L+1)*d,)*2, dtype=dtype, device=device)
 
-class FloquetPulse:
-    def __init__(
-        self,
-        *,
-        levels: int = 6,
-        n_side: int = 8,
-        sigma_frac: float = 1 / 6,
-        alpha: float = 0.043,
-        drive_freq_ratio: float = 1.0,
-        total_time: float = 1.0,
-        subpulse_count: int = 8,
-        cr_weight: float = 1.0,
-        EJ_EC_ratio= 50.0,
-        numeric_lambda: bool = False,
-        device: str = "cpu",
-        dtype=torch.complex128,
-    ):
-        self.L, self.N = levels, n_side
-        self.alpha = alpha
-        self.device, self.dtype = torch.device(device), dtype
-        self.cr_weight = cr_weight
+    # diagonal blocks
+    H0 = H0_block(mu, Lambda,
+                  sigma=sigma, pulse_period=pulse_period,
+                  carrier_period=carrier_period,
+                  phi=phi, rabi_max=rabi_max, rwa=rwa,
+                  device=device, dtype=dtype)
+    wF = 2 * math.pi / pulse_period
+    for m in range(-L, L+1):
+        idx = slice((m+L)*d, (m+L+1)*d)
+        Q[idx, idx] = H0 + torch.eye(d, device=device, dtype=dtype) * m * wF
 
-        # ---- time scaling ------------------------------------------------
-        self.floquet_period = total_time / subpulse_count  # Floquet period (long repetition period)
-        self.carrier_period = 2 * math.pi / drive_freq_ratio  # Short carrier oscillation period
-        self.sigma = sigma_frac * self.floquet_period
-        self.omega_d = drive_freq_ratio
+    # off-diagonal blocks
+    for k in range(-L, L+1):
+        if k == 0:
+            continue
+        Hk = Hk_block(k, Lambda,
+                      sigma=sigma, pulse_period=pulse_period,
+                      carrier_period=carrier_period,
+                      phi=phi, rabi_max=rabi_max, rwa=rwa,
+                      device=device, dtype=dtype)
+        for m in range(-L, L+1):
+            n = m - k
+            if -L <= n <= L:
+                Q[(m+L)*d:(m+L+1)*d, (n+L)*d:(n+L+1)*d] = Hk
+    return Q
 
-        # ---- Duffing energies -------------------------------------------
-        E = TransmonCore.duffing_energies(
-            levels, alpha, dtype=dtype, device=self.device
+
+
+# -------------------------------------------------------------------------
+#  RE-USE THE BLOCK BUILDERS AND build_sambe FROM EARLIER
+#    – make sure they are imported / defined above this cell
+# -------------------------------------------------------------------------
+
+def single_pulse_propagator(
+    n_levels,            # number of transmon levels  (e.g. 2 for a qubit)
+    rabi_max,            # peak Rabi frequency  (units: qubit angular freq)
+    phi,                 # carrier phase  (units of pi, e.g. 0.5 => pi/2)
+    detuning_ratio,      # omega_d / omega_qubit
+    duration,            # pulse length  (time units: 1 / omega_qubit)
+    anharmonicity,
+    *,
+    sigma_ratio=0.10,    # Gaussian width  sigma = sigma_ratio * duration
+    L=10,                # Floquet harmonic cut-off
+    rwa=True,            # True => RWA, False => keep counter-rotating
+    device="cpu",
+    dtype=torch.complex128,
+):
+    """
+    Return the physical-space propagator U(T) for ONE tiled-Gaussian pulse.
+
+    A quick units convention:
+        - omega_qubit = 1  (angular units)
+        - Time is measured in 1 / omega_qubit.
+        - rabi_max is dimensionless (fraction of omega_qubit).
+
+    Raises
+    ------
+    ValueError if `duration` does not contain an integer number of
+    carrier periods  (within 1e-10 relative tolerance).
+    """
+
+    # ---------------------------------------------------------------
+    # 0.  Validate carrier commensurability
+    # ---------------------------------------------------------------
+    carrier_period = 1.0 / detuning_ratio            # T_d  (see units note)
+    n_cycles = duration / carrier_period
+    if abs(n_cycles - round(n_cycles)) > 1e-10:
+        raise ValueError(
+            "duration does not contain an integer number "
+            "of carrier periods:  n_cycles = {:.12f}".format(n_cycles)
         )
+    n_cycles = int(round(n_cycles))
 
-        dim = levels * (2 * n_side + 1)
-        self._static = torch.zeros((dim, dim), dtype=dtype, device=self.device)
-        n = torch.arange(levels, device=self.device, dtype=torch.float64)
-        for m in range(-n_side, n_side + 1):
-            block = (E - n) - m * self.omega_d
-            i = (m + n_side) * levels
-            self._static[i : i + levels, i : i + levels] = block
+    # ---------------------------------------------------------------
+    # 1.  Basic transmon / qubit model   (2-level by default)
+    # ---------------------------------------------------------------
+    EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(anharmonicity)
+    mu, Lambda = TransmonCore.compute_transmon_parameters(n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio)             # Hermitian conjugate
 
-        # ---- drive templates --------------------------------------------
-        if numeric_lambda:
-            # pull numerical λ from charge-basis once
-            _, lam_full = TransmonCore.compute_transmon_parameters(
-                n_levels=levels, EJ_EC_ratio=EJ_EC_ratio
-            )
-            lam_full = torch.tensor(lam_full, dtype=dtype, device=self.device)
-            X_drive = lam_full + lam_full.T.conj()
-        else:
-            X_drive = sum(TransmonCore.ladder(levels, dtype=dtype, device=self.device))
+    # pulse parameters
+    sigma = sigma_ratio * duration
+    phi_rad = phi * math.pi
 
-        fourier_coeff_limit = 2 * self.floquet_period / (2 * math.pi * self.omega_d)
-        C = cos_gauss_coeffs(
-            fourier_coeff_limit, self.sigma, self.floquet_period, self.carrier_period, dtype=dtype, device=self.device
-        )
-        drv_rwa = torch.zeros_like(self._static)
-        drv_cr  = torch.zeros_like(self._static)
-
-        for d, c in enumerate(C, start=-n_side):
-            if c.abs() < 1e-16:
-                continue
-            tgt = drv_rwa if d == 0 else drv_cr
-            for m in range(-n_side, n_side + 1):
-                n_val = m - d
-                if -n_side <= n_val <= n_side:
-                    i = (m + n_side) * levels
-                    j = (n_val + n_side) * levels
-                    tgt[i : i + levels, j : j + levels] += 0.5 * c * X_drive
-        self._drv_rwa, self._drv_cr = drv_rwa, drv_cr
-
-    # ............ propagator for one Gaussian pulse .....................
-    def unitary(self, omega_ratio: Union[float, Tensor], phi: Union[float, Tensor]):
-        om = omega_ratio if torch.is_tensor(omega_ratio) else torch.tensor(
-            float(omega_ratio), dtype=torch.float64, device=self.device
-        )
-        ph = phi if torch.is_tensor(phi) else torch.tensor(
-            float(phi), dtype=torch.float64, device=self.device
-        )
-        H = self._static + om * (self._drv_rwa + self.cr_weight * self._drv_cr)
-        U_big = torch.linalg.matrix_exp(-1j * H * self.floquet_period)
-
-        col0 = slice(self.N * self.L, (self.N + 1) * self.L)
-        U = torch.zeros((self.L, self.L), dtype=self.dtype, device=self.device)
-        for m in range(-self.N, self.N + 1):
-            row = slice((m + self.N) * self.L, (m + self.N + 1) * self.L)
-            U += U_big[row, col0]
-
-        if ph.item() != 0.0:
-            R = torch.diag(torch.exp(-1j * ph * torch.arange(self.L, device=self.device))).to(self.dtype)
-            U = R @ U @ R.conj().T
-        return U
-
-
-# ============================================================================
-#  Composite sequence wrapper
-# ============================================================================
-
-class GaussianPulseSequence:
-    def __init__(self, *, subpulse_count: int = 8, **pulse_kw):
-        self.N = subpulse_count
-        self.pulse = FloquetPulse(subpulse_count=subpulse_count, **pulse_kw)
-        self.device, self.dtype = self.pulse.device, self.pulse.dtype
-        self.L = self.pulse.L
-
-    # -------- helpers / checks ------------------------------------------
-    def _broadcast_amps(self, amps):
-        if isinstance(amps, (int, float, Tensor)) and not (
-            torch.is_tensor(amps) and amps.dim() > 0
-        ):
-            om = amps if torch.is_tensor(amps) else torch.tensor(
-                float(amps), dtype=torch.float64, device=self.device
-            )
-            return [om] * self.N
-        if len(amps) != self.N:
-            raise ValueError(f"Need {self.N} amplitudes (got {len(amps)}).")
-        return [
-            a if torch.is_tensor(a) else torch.tensor(float(a), dtype=torch.float64, device=self.device)
-            for a in amps
-        ]
-
-    def _check_phases(self, phases):
-        if len(phases) != self.N:
-            raise ValueError(f"Need {self.N} phases (got {len(phases)}).")
-        return [
-            p if torch.is_tensor(p) else torch.tensor(float(p), dtype=torch.float64, device=self.device)
-            for p in phases
-        ]
-
-    # -------- full propagator -------------------------------------------
-    def full_unitary(self, amps, phases):
-        om_list = self._broadcast_amps(amps)
-        ph_list = self._check_phases(phases) + [0.0]
-        U = torch.eye(self.L, dtype=self.dtype, device=self.device)
-        for om, ph in zip(om_list, ph_list):
-            U = self.pulse.unitary(om, ph) @ U
-        return U
-
-    # -------- project fidelity ------------------------------------------
-    def project_fidelity(self, U, target):
-        if target.shape == (2, 2):
-            P = torch.zeros((2, self.L), dtype=self.dtype, device=self.device)
-            P[0, 0] = P[1, 1] = 1
-            U = P @ U @ P.conj().T
-        return float(torch.abs(torch.trace(target.conj().T @ U)) / 2.0)
-
-
-# ============================================================================
-#  Example run: 8 Gaussian slices in 20 ns  (paper Table I sequence)
-# ============================================================================
-
-if __name__ == "__main__":
-    dev, dtype = "cuda", torch.complex128
-    
-    EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
-
-    seq = GaussianPulseSequence(
-        subpulse_count=7,
-        levels=6,
-        n_side=14,
-        sigma_frac=1 / 6,
-        alpha=0.043,
-        numeric_lambda=True,          # <- use exact λ from charge basis
-        drive_freq_ratio=1.0,         # resonant
-        total_time=880,
-        cr_weight=0.0,                
-        EJ_EC_ratio=EJ_EC_ratio,
-        device=dev,
+    # ---------------------------------------------------------------
+    # 2.  Build the Sambe matrix Q   (size  (2L+1)*d  )
+    # ---------------------------------------------------------------
+    Q = build_sambe(
+        mu,
+        Lambda,
+        L,
+        sigma=sigma,
+        pulse_period=duration,
+        carrier_period=carrier_period,
+        phi=phi_rad,
+        rabi_max=rabi_max,
+        rwa=rwa,
+        device=device,
         dtype=dtype,
     )
 
-    # Table I data (MHz)  ->  Ω/ω0  (ω0/2π = 7 GHz)
-    amps  = np.array(
+    # ---------------------------------------------------------------
+    # 3.  One-period propagator in the extended space
+    # ---------------------------------------------------------------
+    U_big = torch.linalg.matrix_exp(-1j * Q * duration)
+
+    # ---------------------------------------------------------------
+    # 4.  Project onto the physical subspace  (m = 0   Fourier block)
+    # ---------------------------------------------------------------
+    mu = torch.as_tensor(mu, dtype=dtype, device=device)
+
+    d = mu.numel()
+    idx = slice(L * d, (L + 1) * d)    # m = 0 row/col block
+    U_phys = U_big[idx, idx]
+
+    return U_phys        # shape:  (d, d)   (complex, differentiable)
+
+
+def pulse_sequence_propagator(
+    n_levels,
+    rabi_list,          # list or 1-D tensor of peak Rabi rates (dimensionless)
+    phase_list,         # list or 1-D tensor of phases   (units of pi)
+    detuning_ratio,     # omega_d / omega_qubit
+    duration,           # pulse length (same for every pulse, 1 / omega_qubit)
+    anharmonicity,
+    *,
+    sigma_ratio = 0.10,
+    L           = 10,
+    rwa         = True,
+    device      = "cpu",
+    dtype       = torch.complex128,
+):
+    """
+    Return the total propagator for a *time-ordered* sequence of pulses.
+
+        U_total = U_N  @ ... @ U_2  @ U_1
+
+    The i-th pulse uses  rabi_max = rabi_list[i]  and  phase = phase_list[i]*pi.
+
+    Parameters
+    ----------
+    n_levels        : int          – number of transmon levels kept
+    rabi_list       : list/tuple/tensor, length N
+    phase_list      : list/tuple/tensor, length N  (each element in units of pi)
+    detuning_ratio  : float        – omega_d / omega_qubit
+    duration        : float        – common pulse duration
+    anharmonicity   : float        – target transmon anharmonicity
+    sigma_ratio     : float        – sigma = sigma_ratio * duration
+    L               : int          – Floquet harmonic cut-off
+    rwa             : bool         – True = RWA, False = full non-RWA
+    device, dtype   : torch options (for autograd / CUDA, etc.)
+
+    Returns
+    -------
+    U_total : (n_levels, n_levels) complex tensor
+    """
+
+    # ------------- sanity checks ---------------------------------------------
+    if len(rabi_list) != len(phase_list):
+        raise ValueError("rabi_list and phase_list must have the same length")
+
+    # convert to tensors so that autograd can track them if needed
+    rabi_list  = torch.as_tensor(rabi_list,  dtype=torch.float64, device=device)
+    phase_list = torch.as_tensor(phase_list, dtype=torch.float64, device=device)
+
+    # start with identity in the physical Hilbert space
+    U_total = torch.eye(n_levels, dtype=dtype, device=device)
+
+    # loop over pulses in chronological order
+    for rabi_max, phase in zip(rabi_list, phase_list):
+        U_pulse = single_pulse_propagator(
+            n_levels          = n_levels,
+            rabi_max          = rabi_max,
+            phi               = phase,          # still in units of pi
+            detuning_ratio    = detuning_ratio,
+            duration          = duration,
+            anharmonicity     = anharmonicity,
+            sigma_ratio       = sigma_ratio,
+            L                 = L,
+            rwa               = rwa,
+            device            = device,
+            dtype             = dtype,
+        )
+        # state_{next} = U_pulse @ state_now
+        U_total = U_pulse @ U_total
+
+    return U_total
+
+
+if __name__ == "__main__":
+    dev, dtype = "cuda", torch.complex128
+    n_levels = 6
+
+    # From Table I - complete population transfer
+    rabi_frequencies = np.array(
         [42.497, 69.996, 69.996, 69.761, 63.782, 69.996, 58.263]
-    ) / 7000.0
+    )
+
+    rabi_frequencies = (
+        rabi_frequencies / 7000
+    )  # Convert to GHz from MHz and normalise by ω01
+
     phases = np.array(
         [-0.3875, 0.0188, 0.0191, 0.1258, 0.2469, 0.3139, 0.2516]
-    ) * math.pi
+    ) * np.pi
 
-    U = seq.full_unitary(amps, phases)
-
-    X = torch.tensor([[0, 1], [1, 0]], dtype=dtype, device=dev)
-
-    F = seq.project_fidelity(U, X)
-    print(f"Propagator:\n{U}")
-    print(f"Projected fidelity to X: {F:.6f}")
+    # Total time T = 20 ns
+    total_time = 20.0 * 2 * np.pi * 7  # Convert to dimensionless units
+    delta = -0.0429
+    EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(delta)
+    
+    seq = pulse_sequence_propagator(
+        n_levels=n_levels,
+        rabi_list=rabi_frequencies,
+        phase_list=phases,
+        L=50,
+        sigma_ratio=1 / 6,
+        anharmonicity=delta,
+        detuning_ratio=1.0,         # resonant
+        duration=math.ceil(total_time / len(rabi_frequencies)),
+        device=dev,
+        dtype=dtype,
+    )
+    
+    print(seq)

@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 
 from transmon_core import TransmonCore
+from transmon_floquet_propagator_2 import H0_block
 
 
 # ============================================================================
@@ -51,7 +52,6 @@ class FloquetPulse:
         subpulse_count: int = 8,
         cr_weight: float = 1.0,
         EJ_EC_ratio= 50.0,
-        numeric_lambda: bool = False,
         device: str = "cpu",
         dtype=torch.complex128,
     ):
@@ -72,28 +72,24 @@ class FloquetPulse:
         )
 
         dim = levels * (2 * n_side + 1)
-        self._static = torch.zeros((dim, dim), dtype=dtype, device=self.device)
-        n = torch.arange(levels, device=self.device, dtype=torch.float64)
-        for m in range(-n_side, n_side + 1):
-            block = (E - n) - m * self.omega_d
-            i = (m + n_side) * levels
-            self._static[i : i + levels, i : i + levels] = block
 
         # ---- drive templates --------------------------------------------
-        if numeric_lambda:
-            # pull numerical λ from charge-basis once
-            _, lam_full = TransmonCore.compute_transmon_parameters(
-                n_levels=levels, EJ_EC_ratio=EJ_EC_ratio
-            )
-            lam_full = torch.tensor(lam_full, dtype=dtype, device=self.device)
-            X_drive = lam_full + lam_full.T.conj()
-        else:
-            X_drive = sum(TransmonCore.ladder(levels, dtype=dtype, device=self.device))
-
-        fourier_coeff_limit = 2 * self.floquet_period / (2 * math.pi * self.omega_d)
-        C = cos_gauss_coeffs(
-            fourier_coeff_limit, self.sigma, self.floquet_period, self.carrier_period, dtype=dtype, device=self.device
+        # pull numerical λ from charge-basis once
+        _, lam_full = TransmonCore.compute_transmon_parameters(
+            n_levels=levels, EJ_EC_ratio=EJ_EC_ratio
         )
+        lam_full = torch.tensor(lam_full, dtype=dtype, device=self.device)
+        
+        self._static = H0_block(E, lam_full, self.sigma,
+               self.floquet_period,
+                self.carrier_period,
+                phi=0.0,
+                rabi_max=1.0,
+                rwa=True,                  # <-- master switch
+                device=None,
+                dtype=torch.complex128,)
+
+
         drv_rwa = torch.zeros_like(self._static)
         drv_cr  = torch.zeros_like(self._static)
 
@@ -200,7 +196,6 @@ if __name__ == "__main__":
         n_side=14,
         sigma_frac=1 / 6,
         alpha=0.043,
-        numeric_lambda=True,          # <- use exact λ from charge basis
         drive_freq_ratio=1.0,         # resonant
         total_time=880,
         cr_weight=0.0,                

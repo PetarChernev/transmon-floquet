@@ -20,12 +20,101 @@ import multiprocessing
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
+from transmon_core import TransmonCore
+from transmon_dynamics import simulate_transmon_propagator
+from transmon_dynamics_pytorch import transmon_propagator_pytorch
+
 RUN_NAME = "H_5x3_L2_5000+10000 fidelity weight"
 # Ensure CUDA-friendly multiprocessing
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
 
 warnings.filterwarnings('ignore')
+
+
+n_levels = 6
+EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
+
+energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+    n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
+)
+energies = torch.tensor(energies, dtype=torch.float64)
+lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128)
+
+
+
+def make_transmon_composite_wrapper(
+    energies,
+    lambdas_full,
+    *,
+    n_levels=6,
+    total_time=20.0,
+    n_time_steps=2000,
+    pulse_type="square",
+    use_rwa=True,
+    use_pytorch=True
+):
+    """
+    Returns a function with the same interface as composite_unitary_torch(phi_list, A, eps, device, dtype),
+    but internally calls transmon_propagator_pytorch using fixed transmon parameters.
+    """
+    def wrapped(rabi_list, phi_list, eps=0.0, device="cpu", dtype=torch.complex128):
+
+        # Apply scaling
+        rabi_list = rabi_list * (1.0 + eps)
+       
+        if use_pytorch:
+            # Ensure input types are torch tensors
+            phi_tensor = torch.tensor(phi_list, dtype=torch.float64, device=device)
+            rabi_tensor = torch.tensor(rabi_list, dtype=torch.float64, device=device)
+        
+            return transmon_propagator_pytorch(
+                rabi_frequencies=rabi_tensor,
+                phases=phi_tensor,
+                energies=energies,
+                lambdas_full=lambdas_full,
+                n_levels=n_levels,
+                total_time=total_time,
+                n_time_steps=n_time_steps,
+                pulse_type=pulse_type,
+                use_rwa=use_rwa,
+                device=device
+            ).to(dtype=dtype)
+        else:
+            return simulate_transmon_propagator(
+                rabi_frequencies=rabi_list,
+                phases=phi_list,
+                energies=energies,
+                lambdas_full=lambdas_full,
+                n_levels=n_levels,
+                total_time=total_time,
+                n_time_steps=n_time_steps,
+                pulse_type=pulse_type,
+                use_rwa=use_rwa,
+            )
+    return wrapped
+
+
+unitary_function = make_transmon_composite_wrapper(
+    energies=energies,
+    lambdas_full=lambdas_full,
+    n_levels=6,
+    total_time=20.0 * 2 * np.pi * 7,
+    n_time_steps=5000,
+    pulse_type="square",
+    use_rwa=True
+)
+
+unitary_function_np = make_transmon_composite_wrapper(
+    energies=energies,
+    lambdas_full=lambdas_full,
+    n_levels=6,
+    total_time=20.0 * 2 * np.pi * 7,
+    n_time_steps=5000,
+    pulse_type="square",
+    use_rwa=True,
+    use_pytorch=False
+)
 
 # ----------------------------------------------------------------------------
 # 1) PyTorch pulse unitary (for GPU acceleration)
@@ -51,7 +140,7 @@ def composite_unitary_torch(phi_list, A, eps=0.0, device='cpu', dtype=torch.comp
     for phi in phi_list:
         U = pulse_unitary_torch(A, phi, eps, device, dtype) @ U
     zero_phi = torch.zeros((), dtype=phi_list.dtype, device=device)
-    U = pulse_unitary_torch(A, zero_phi, eps, device, dtype) @ U
+    U = unitary_function(A, zero_phi, eps, device, dtype) @ U
     return U
 
 # ----------------------------------------------------------------------------
@@ -59,11 +148,11 @@ def composite_unitary_torch(phi_list, A, eps=0.0, device='cpu', dtype=torch.comp
 # ----------------------------------------------------------------------------
 def compute_fidelity_derivatives(phi_list, A_val, N_derivs, device='cpu'):
     dtype = torch.complex128
-    phi_tensor = torch.tensor(phi_list, dtype=torch.float64, device=device)
+    phi_tensor = torch.tensor(phi_list, dtype=torch.float64, device=device, requires_grad=True)
     A = torch.tensor(A_val, dtype=torch.float64, device=device, requires_grad=True)
     H = torch.tensor([[1, 1], [1, -1]], dtype=dtype, device=device) / np.sqrt(2)
-    U = composite_unitary_torch(phi_tensor, A, device=device, dtype=dtype)
-    inner = torch.trace(H.conj().T @ U)
+    U = unitary_function(phi_tensor, A, device=device, dtype=dtype)
+    inner = torch.trace(H.conj().T @ U[:2, :2])
     F = torch.abs(inner) / 2.0
     derivatives = []
     current = F
@@ -99,20 +188,12 @@ def compute_multi_point_derivatives(phi_param, A_param, N_derivs, area_scales, H
 # 5) CMA-ES objective (fidelity only)
 # ----------------------------------------------------------------------------
 def cmaes_objective(params):
-    params_mod = np.mod(params, 2 * np.pi)
-    phi_list = params_mod[:-1]
-    A = params_mod[-1]
-    H = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)
-    U = np.eye(2, dtype=complex)
-    for phi in phi_list:
-        half = A / 2.0; c = np.cos(half); s = np.sin(half)
-        exp_ip = np.exp(-1j * phi); exp_im = np.exp(1j * phi)
-        Ui = np.array([[c, -1j * exp_ip * s], [-1j * exp_im * s, c]], dtype=complex)
-        U = Ui @ U
-    half = A / 2.0; c = np.cos(half); s = np.sin(half)
-    Ui = np.array([[c, -1j * s], [-1j * s, c]], dtype=complex)
-    U = Ui @ U
-    inner = np.trace(np.conj(H.T) @ U)
+    phi_list = params[:len(params) // 2]
+    A = params[len(params) // 2:]
+    # H = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2)
+    X = np.array([[0, 1], [1, 0]], dtype=complex)
+    U = unitary_function_np(A, phi_list, eps=0.0)
+    inner = np.trace(np.conj(X.T) @ U[:2, :2])
     F = np.abs(inner) / 2.0
     return 1.0 - F**2
 
@@ -189,24 +270,48 @@ def hybrid_parallel(N_pulses=13, N_derivs=2, n_cand=None, fidelity_target=0.9999
     n_cand = n_cand or cpu_count()
     tqdm.write(f"Running CMA-ES to generate {n_cand} candidates...")
     cma_sols, attempts = [], 0
-    while len(cma_sols) < n_cand and attempts < 3*n_cand:
-        attempts +=1
-        p0 = np.concatenate([np.random.rand(N_pulses-1)*2*math.pi, [math.pi/2+np.random.randn()*0.1]])
-        es = CMAEvolutionStrategy(p0,0.5,{'popsize':50,'maxiter':1000,'tolfun':1e-10,'verb_disp':0})
-        for _ in range(500):
-            sols = es.ask(); losses = [cmaes_objective(s) for s in sols]
+    
+    # From Table I - complete population transfer
+    rabi_frequencies = np.array(
+        [31.651, 44.988, 69.97, 60.608, 66.029, 68.771, 69.562, 66.971]
+    )
+
+    rabi_frequencies = (
+        rabi_frequencies / 7000
+    )  # Convert to GHz from MHz and normalise by ω01
+
+    phases = np.array(
+        [0.1779, 0.0499, 0.1239, 0.2538, 0.2886, 0.1688,0.1645, 0.1234]
+    ) * np.pi
+    
+    with Pool(cpu_count()) as pool:
+        while len(cma_sols) < n_cand and attempts < 3*n_cand:
+            attempts +=1
+            p0 = np.concatenate([rabi_frequencies, phases])
+            es = CMAEvolutionStrategy(p0,0.05,{'popsize':50,'maxiter':1000,'tolfun':1e-10,'verb_disp':0})
+            losses = [cmaes_objective(p0)]  # Evaluate known good point
+            sols = es.ask() 
+            losses += pool.map(cmaes_objective, sols)
+            sols = [p0] + sols  # Add p0 to beginning of solutions
             es.tell(sols, losses)
-            if min(losses) < (1-fidelity_target**2): break
-        opt = es.result.xbest; F_c, _ = compute_fidelity_derivatives(opt[:-1],opt[-1],N_derivs,device)
-        if F_c>=fidelity_target:
-            tqdm.write(f"  Candidate {len(cma_sols)+1}: F={F_c:.6f}, A={opt[-1]:.6f}")
-            cma_sols.append((len(cma_sols)+1,opt[:-1],opt[-1]))
-    if not cma_sols:
-        tqdm.write("No CMA candidates found."); return None
-    tqdm.write("Spawning parallel GD runs...")
-    args = [(cid,phi,A,N_derivs,device) for cid,phi,A in cma_sols]
-    results=[]
-    with Pool(4) as pool:
+            for _ in range(500):
+                print(f"  CMA iteration {es.countiter} (attempt {attempts})")
+                sols = es.ask(); 
+                losses = pool.map(cmaes_objective, sols)
+                print(f"  Evaluated {len(sols)} candidates, min loss: {min(losses):.6f}")
+                es.tell(sols, losses)
+                if min(losses) < (1-fidelity_target**2): break
+            opt = es.result.xbest; 
+            F_c, _ = compute_fidelity_derivatives(opt[:N_pulses],opt[:N_pulses:],N_derivs,device)
+            if F_c>=fidelity_target:
+                tqdm.write(f"  Candidate {len(cma_sols)+1}: F={F_c:.6f}, A={opt[-1]:.6f}")
+                cma_sols.append((len(cma_sols)+1,opt[:-1],opt[-1]))
+        if not cma_sols:
+            tqdm.write("No CMA candidates found."); return None
+        tqdm.write("Spawning parallel GD runs...")
+        args = [(cid,phi,A,N_derivs,device) for cid,phi,A in cma_sols]
+        results=[]
+    with Pool(1) as pool:
         for run_id,res in tqdm(pool.imap_unordered(gd_task,args), total=len(args), desc='Overall GD', position=0):
             results.append((run_id,*res))
     tqdm.write("Results from all GD runs:")
@@ -229,4 +334,5 @@ def hybrid_parallel(N_pulses=13, N_derivs=2, n_cand=None, fidelity_target=0.9999
 if __name__=='__main__':
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tqdm.write(f"Using device: {device}")
-    hybrid_parallel(device=device, N_pulses=13, N_derivs=2, n_cand=36, fidelity_target=0.9999995)
+    hybrid_parallel(device=device, N_pulses=13, N_derivs=2, n_cand=36, fidelity_target=0.999995)
+        

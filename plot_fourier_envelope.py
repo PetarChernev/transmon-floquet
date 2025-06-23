@@ -9,6 +9,9 @@ import math
 import torch
 import matplotlib.pyplot as plt
 
+from envelope_fourier import omega_tilde_n
+from transmon_floquet_propagator_2 import omega_tilde_fft
+
 
 # ----------------------------------------------------------------------
 #  Fourier coefficients  of Gaussian × cos  (period 2π)
@@ -38,45 +41,40 @@ def cos_gauss_coeffs(N, sigma, floquet_period, carrier_period,
 # ----------------------------------------------------------------------
 def main():
     # ---------- user-adjustable parameters ----------
-    N               = 50                 # number of positive harmonics
-    sigma           = 0.30               # Gaussian width
+    N               = 20                # number of positive harmonics
+    sigma           = 1/6               # Gaussian width
     floquet_period  = 2                  # = 2π   (period of the series)
-    cycles_in_T     = 30                 # carrier cycles per Floquet period
-    carrier_period  = floquet_period / cycles_in_T
     device          = "cpu"              # "cuda" if you like
     # ------------------------------------------------
 
-    # 1. Fourier coefficients (real, by definition)
-    c_real = cos_gauss_coeffs(
-        N, sigma, floquet_period, carrier_period,
-        dtype=torch.float64, device=device
-    )
     k = torch.arange(-N, N + 1, dtype=torch.float64, device=device)
-    c = c_real.to(torch.complex128)          # promote to complex for synthesis
-
-    # 2. Reconstruct the truncated Fourier series over one period
+    
     t = torch.linspace(
-        -floquet_period / 2,
-        floquet_period / 2,
+        0,
+        floquet_period,
         20000,
         dtype=torch.float64,
         device=device,
     )
     
+    c_real_analytic = omega_tilde_n(
+        k, sigma, floquet_period
+    )
+    c_analytic = c_real_analytic.to(torch.complex128)           
+
+    c_real_fft = omega_tilde_fft(k, sigma, floquet_period,)
+    c_fft = c_real_fft.to(torch.complex128)          
+
     ω_f = 2 * math.pi / floquet_period
-    f_rec = torch.sum(c[None, :] * torch.exp(1j * k[None, :] * ω_f * t[:, None]),
+    f_analytic = torch.sum(c_analytic * torch.exp(1j * k[None, :] * ω_f * t[:, None]),
                       dim=1).real.cpu()
 
-    # (Optional) original aperiodic Gaussian-cosine for reference
-    f_orig = (
-        torch.exp(-t ** 2 / (2 * sigma ** 2))
-        * torch.cos(2 * math.pi * t / carrier_period)
-    ).cpu()
-
+    f_fft = torch.sum(c_fft * torch.exp(1j * k[None, :] * ω_f * t[:, None]),
+                      dim=1).real.cpu()
     # 3. Plot
     plt.figure()
-    plt.scatter(t, f_rec,               label="Reconstructed periodic signal")
-    plt.scatter(t, f_orig,        label="Single-shot envelope")
+    plt.plot(t, f_analytic,               label="Analytic")
+    plt.plot(t, f_fft,               label="FFT")
     plt.xlabel(r"time $t$")
     plt.ylabel(r"$f(t)$")
     plt.title("Gaussian-modulated cosine and its truncated Fourier reconstruction")
