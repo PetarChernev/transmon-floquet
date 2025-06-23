@@ -1,112 +1,9 @@
 import numpy as np
-from scipy.linalg import eigh, expm
+from scipy.linalg import expm
 import matplotlib.pyplot as plt
 
+from transmon_core import TransmonCore
 
-def construct_transmon_hamiltonian_charge_basis(n_charge=30, EJ_EC_ratio=50):
-    """
-    Construct the transmon Hamiltonian in the charge basis (equation A1).
-    H = 4EC Σ_j (j-n_cut)² δ_jk - EJ/2 (δ_j+1,k + δ_j-1,k)
-    """
-    n_states = 2 * n_charge + 1
-    H_charge = np.zeros((n_states, n_states))
-
-    # Diagonal: charging energy
-    for i in range(n_states):
-        n = i - n_charge
-        H_charge[i, i] = 4 * n ** 2  # In units of EC
-
-    # Off-diagonal: Josephson tunnelling
-    EJ = EJ_EC_ratio  # In units of EC
-    for i in range(n_states - 1):
-        H_charge[i, i + 1] = -EJ / 2
-        H_charge[i + 1, i] = -EJ / 2
-
-    return H_charge
-
-
-def find_EJ_EC_for_anharmonicity(target_anharmonicity=-0.0429, n_charge=30):
-    """
-    Find EJ/EC ratio that gives the target anharmonicity.
-    Only needs first 3 energy levels to compute anharmonicity.
-    """
-    ratios = np.linspace(20, 200, 100)
-    anharms = []
-
-    for ratio in ratios:
-        H_charge = construct_transmon_hamiltonian_charge_basis(n_charge, ratio)
-        eigenvalues, _ = eigh(H_charge)
-        eigenvalues = np.sort(eigenvalues)
-
-        # Anharmonicity only depends on first 3 levels
-        E0, E1, E2 = eigenvalues[:3]
-        omega_01 = E1 - E0
-        omega_12 = E2 - E1
-        anharm = (omega_12 - omega_01) / omega_01
-        anharms.append(anharm)
-
-    anharms = np.array(anharms)
-    idx = np.argmin(np.abs(anharms - target_anharmonicity))
-
-    print(f"Target anharmonicity: {target_anharmonicity:.4f}")
-    print(f"Achieved anharmonicity: {anharms[idx]:.4f}")
-
-    return ratios[idx]
-
-
-def compute_transmon_parameters(n_levels=6, n_charge=30, target_anharmonicity=-0.0429):
-    """
-    Numerically derive the transmon parameters following the paper's procedure.
-
-    Returns:
-    - energies: Energy eigenvalues
-    - lambdas: Matrix elements λi,j = ⟨i|n̂|j⟩ in energy eigenbasis
-    """
-    # Find appropriate EJ/EC ratio
-    EJ_EC_ratio = find_EJ_EC_for_anharmonicity(target_anharmonicity, n_charge)
-    print(f"Using EJ/EC = {EJ_EC_ratio:.1f}")
-
-    # Construct Hamiltonian in charge basis
-    H_charge = construct_transmon_hamiltonian_charge_basis(n_charge, EJ_EC_ratio)
-
-    # Charge operator in charge basis: n̂|n⟩ = n|n⟩
-    n_op_charge = np.diag(np.arange(-n_charge, n_charge + 1, dtype=float))
-
-    # Diagonalise to get energy eigenbasis
-    eigenvalues, eigenvectors = eigh(H_charge)
-
-    # Sort by energy
-    idx = eigenvalues.argsort()
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-
-    # Transform charge operator to energy eigenbasis
-    n_op_energy = eigenvectors.T @ n_op_charge @ eigenvectors
-
-    # Extract first n_levels
-    energies = eigenvalues[:n_levels]
-    lambdas_full = n_op_energy[:n_levels, :n_levels]
-
-    # Normalise so ω01 = 1
-    omega_01 = energies[1] - energies[0]
-    energies = (energies - energies[0]) / omega_01
-
-    # Verify properties mentioned in the paper
-    print(f"\nVerifying λ properties:")
-    print(f"λ_ii (should be 0): {[lambdas_full[i, i] for i in range(min(3, n_levels))]}")
-    print(f"λ*_ij = λ_ji? {np.allclose(lambdas_full, lambdas_full.T.conj())}")
-
-    # For transmon, matrix elements should be real
-    if np.max(np.abs(np.imag(lambdas_full))) > 1e-10:
-        print(
-            f"Warning: Imaginary parts found, max = {np.max(np.abs(np.imag(lambdas_full)))}"
-        )
-
-    return energies, np.real(lambdas_full)
-
-# -----------------------------------------------------------------------------
-# NEW: pulse-envelope helpers
-# -----------------------------------------------------------------------------
 
 def _base_envelope(t, pulse_idx, pulse_duration, pulse_type="square"):
     """Return the *unit* envelope (0…1) for a single pulse at instant t."""
@@ -151,13 +48,14 @@ def simulate_transmon_dynamics(
     n_time_steps=2000,
     pulse_type="square",
     use_rwa=True,
+    EJ_EC_ratio=50.0
 ):
     """
     Simulate using equation (4) or the full Eq. (A13) depending on `use_rwa`.
     """
     # Get transmon parameters
-    energies, lambdas_full = compute_transmon_parameters(
-        n_levels, n_charge=30, target_anharmonicity=-0.3 / 7
+    energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+        n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
     )
 
     # Extract λj = λ_{j,j-1} (nearest neighbours) only if RWA is used
@@ -240,6 +138,8 @@ if __name__ == "__main__":
     # Initial state |0⟩
     initial_state = np.zeros(n_levels, dtype=complex)
     initial_state[0] = 1.0
+    
+    EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
 
     # Simulate
     final_state, states_history, times = simulate_transmon_dynamics(
@@ -250,7 +150,8 @@ if __name__ == "__main__":
         total_time=total_time,
         pulse_type="gaussian",
         n_time_steps=5000,
-        use_rwa=False
+        use_rwa=False,
+        EJ_EC_ratio=EJ_EC_ratio
     )
 
     # Plot

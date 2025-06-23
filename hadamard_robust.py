@@ -26,7 +26,7 @@ def schrodinger_rhs(t, psi, H):
 phi = [4.3754, 4.958, 5.1619, 2.567, 3.1661, 3.9052, 0.0085, 3.5984, 1.4051, 1.9121, 3.8791, 1.7984, 0]
 omega_0 = 1.7857
 # Sweep epsilon values (fractional deviation)
-epsilons = np.linspace(-0.2, 0.2, 41)
+epsilons = np.linspace(-0.05, 0.05, 41)
 fidelities = []
 
 # Initial state |0>
@@ -69,7 +69,7 @@ plt.plot(epsilons, fidelities, '-o')
 plt.axhline(1.0, color='k', linestyle='--', linewidth=1)
 plt.xlabel('Fractional pulse-area deviation ε')
 plt.ylabel('Fidelity to H |0>')
-plt.ylim(0.995, 1)
+plt.ylim(0.9995, 1)
 plt.title('Composite Pulse Fidelity vs. Area Error')
 plt.grid(True)
 plt.tight_layout()
