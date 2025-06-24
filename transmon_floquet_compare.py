@@ -1,3 +1,10 @@
+"""
+Compares the propoagator computed from the Floquet Hamiltonian
+with the unitary estimated from a simulation of a transmon.
+
+This is for a single period of constant Rabi cosine drive.
+"""
+
 import math
 import numpy as np
 import torch

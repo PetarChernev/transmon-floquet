@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Hybrid optimization of a composite pulse sequence to approximate the Hadamard gate
-with minimized derivatives with respect to pulse area A, using parallel gradient descent.
-Last phase fixed to 0; phases and area constrained mod 2π.
-Progress tracking: one overall bar plus per-process GD iteration bars using tqdm positions.
-Replaced prints during progress with tqdm.write to avoid bar displacement.
+Hybrid optimization of a composite pulse sequence to approximate an arbitrary unitary
+using a combination of CMA-ES and gradient descent.
 
-
+Uses a Floquet-based approach to compute the unitary evolution of a transmon qubit
+under a composite pulse sequence, and optimizes the fidelity of the resulting unitary
+with respect to a target unitary.
+This script is designed to run on a CUDA-capable GPU, but can also run on CPU
+if CUDA is not available.
 """
 import os
 import pickle
