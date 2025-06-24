@@ -284,16 +284,6 @@ for m in range(-M, M+1):
 * The sum $\sum_{m}U_{m,0}$ coherently adds every process in which the system **absorbs or emits $m$ drive-quanta** over the cycle and then returns to its original time phase.
 * For strong driving these multi-photon processes are indispensable; neglecting them yields a non-unitary $U_{0,0}$ and wrong populations.
 
----
-
-### Further reading
-
-Equation (12) in Ref. \[Phys. Rev. B 99, 094303 (2019)] shows exactly how the “fold-back’’ from Sambe to physical space is carried out by **summing the extended-space blocks**, i.e. the prescription above.&#x20;
-
-For a comprehensive pedagogical treatment see the review by P. Hänggi *et al.*, Chap. 5 “Driven Quantum Systems’’ (in particular the discussion around Eqs. 5.116–5.118 on reconstructing physical states from Sambe space). ([physik.uni-augsburg.de][1])
-
-[1]: https://www.physik.uni-augsburg.de/theo1/hanggi/Chapter_5.pdf "qtad_090797.dvi"
-
 
 ## Task
 Your task is to check the methematical theory above. Does this match the Floquet thoery from literature? Is the Floquet Hamiltonian defined correctly using the Fourier coefficients? Are the Fourier coefficients derived correctly for this Hamiltonian? Are there any other issues you observe?

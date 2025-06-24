@@ -12,7 +12,7 @@ import torch
 from transmon_core import TransmonCore
 from transmon_dynamics import simulate_transmon_dynamics
 
-from transmon_floquet_propagator import compute_fourier_coeffs, floquet_hamiltonian_const_rabi_period
+from transmon_floquet_propagator import compute_fourier_coeffs, floquet_propagator_square_rabi_one_period
 
 
 def estimate_unitary(simulate, dim):
@@ -100,6 +100,6 @@ if __name__ == "__main__":
 
 
     # Compute Floquet propagator for one periodz
-    U = floquet_hamiltonian_const_rabi_period(fourier_coeffs, energies, 1, 100)
+    U = floquet_propagator_square_rabi_one_period(fourier_coeffs, energies, 1, 100)
     
     print(f"Fidelity: {unitary_fidelity(unitary_est, U)}")

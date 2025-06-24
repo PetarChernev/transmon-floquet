@@ -45,7 +45,7 @@ def compute_fourier_coeffs(rabi: float,
     return C
 
 
-def floquet_hamiltonian_const_rabi_period(fourier_coeffs: dict,
+def floquet_propagator_square_rabi_one_period(fourier_coeffs: dict,
                                           energies: torch.Tensor,
                                           omega_d: float,
                                           fourier_cutoff: int) -> torch.Tensor:

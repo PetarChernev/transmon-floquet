@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+**OUTDATED: currently not updated to use floquet_propagator_square_rabi_one_period**
+
 Hybrid optimization of a composite pulse sequence to approximate an arbitrary unitary
 using a combination of CMA-ES and gradient descent.
 
@@ -22,8 +24,6 @@ from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
 from transmon_core import TransmonCore
-from transmon_dynamics import simulate_transmon_propagator
-from transmon_dynamics_pytorch import transmon_propagator_pytorch
 
 RUN_NAME = "H_5x3_L2_5000+10000 fidelity weight"
 # Ensure CUDA-friendly multiprocessing
