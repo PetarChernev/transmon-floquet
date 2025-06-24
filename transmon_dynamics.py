@@ -164,14 +164,31 @@ def plot_sequence():
         energies=energies,
         lambdas_full=couplings
     )
+    
+    # Simulate RWA
+    final_state_rwa, states_history_rwa, times = simulate_transmon_dynamics(
+        initial_state,
+        rabi_frequencies,
+        phases,
+        n_levels=n_levels,
+        total_time=total_time,
+        pulse_type="square",
+        n_time_steps=5000,
+        use_rwa=True,
+        energies=energies,
+        lambdas_full=couplings
+    )
     # Plot
     populations = np.abs(states_history) ** 2
+    populations_rwa = np.abs(states_history_rwa) ** 2
 
     plt.figure(figsize=(12, 8))
 
     plt.subplot(2, 1, 1)
+    level_colors = ['b', 'g', 'r', 'c']
     for level in range(4):
-        plt.plot(times, populations[:, level], label=f"|{level}⟩")
+        plt.plot(times, populations[:, level], label=f"|{level}⟩", c=level_colors[level])
+        plt.plot(times, populations_rwa[:, level], label=f"|{level}⟩_rwa", c=level_colors[level], ls="--")
     plt.xlabel("Time (dimensionless)")
     plt.ylabel("Population")
     plt.title("Population Transfer with Composite Pulses")
@@ -181,7 +198,7 @@ def plot_sequence():
     plt.subplot(2, 1, 2)
     pulse_duration = total_time / len(rabi_frequencies)
     pulse_plot = drive_envelope_array(
-        times, rabi_frequencies, pulse_duration, pulse_type="gaussian"
+        times, rabi_frequencies, pulse_duration, pulse_type="square"
     )
     plt.plot(times, pulse_plot, "r-", linewidth=2)
     plt.xlabel("Time (dimensionless)")
@@ -196,7 +213,12 @@ def plot_sequence():
     for level in range(4):
         print(f"|{level}⟩: {np.abs(final_state[level]) ** 2:.6f}")
         
+    
+    print(f"\nFinal populations (RWA):")
+    for level in range(4):
+        print(f"|{level}⟩: {np.abs(final_state_rwa[level]) ** 2:.6f}")  
         
+          
 def plot_single_period():
     n_levels = 6
 
