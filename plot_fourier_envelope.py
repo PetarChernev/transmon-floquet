@@ -10,7 +10,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from envelope_fourier import omega_tilde_n
-from transmon_floquet_propagator_2 import omega_tilde_fft
+from transmon_floquet_propagator import omega_tilde_fft
 
 
 # ----------------------------------------------------------------------
