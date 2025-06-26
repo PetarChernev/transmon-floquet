@@ -1,147 +1,198 @@
 import math
 import torch
-import numpy as np
 
-from transmon_core import TransmonCore
+from typing import Optional, Sequence
 
-def compute_fourier_coeffs(rabi: float,
-                           phase: float,
-                           couplings: torch.Tensor,
-                           fourier_cutoff: int) -> dict:
+def floquet_propagator_square_rabi(
+    rabi: torch.Tensor, 
+    phase: torch.Tensor,
+    energies: torch.Tensor, 
+    couplings: torch.Tensor,
+    omega_d: float,
+    floquet_cutoff: int,
+    time: Optional[float] = None
+) -> torch.Tensor:
     """
-    Compute the Fourier coefficient matrices C^{(n)} for the drive Hamiltonian H1(t),
-    including static (n=0) drive pieces and enforcing Hermiticity.
+    Build truncated Floquet Hamiltonian in the lab frame.
     """
-    d = couplings.shape[0]
-    M = fourier_cutoff
-    # Initialize coefficients for n in [-M..M]
-    C = {n: torch.zeros((d, d), dtype=torch.cfloat) for n in range(-M, M+1)}
 
-    half_rabi = 0.5 * rabi
-    exp_pos = torch.exp(1j * phase)
-    exp_neg = torch.exp(-1j * phase)
+    H_F = build_floquet_hamiltonian(
+        rabi, 
+        phase,
+        energies, 
+        couplings,
+        omega_d,
+        floquet_cutoff
+    )
+    if time is None:
+        time = 2 * math.pi / omega_d  # one period of the drive
+    return get_physical_propagator_strong_field(H_F, time, floquet_cutoff)
 
-    for j in range(d):
-        for l in range(d):
-            lam_fwd = couplings[j, l]        #  λ_{jl}
-            lam_bwd = couplings[l, j]        #  λ_{lj}  ( = λ_{jl}* for a transmon)
-
-            if lam_fwd == 0 and lam_bwd == 0:
-                continue
-
-            Δ = j - l                       # level difference
-            # ---------- forward part  λ_{jl} ----------------------------------
-            for offset, phase_factor in ((+1, exp_pos), (-1, exp_neg)):
-                n = Δ + offset
-                if -M <= n <= M:
-                    C[n][j, l] += half_rabi * lam_fwd * phase_factor
-
-            # ---------- backward part λ_{lj} ----------------------------------
-            for offset, phase_factor in ((+1, exp_pos), (-1, exp_neg)):
-                n = -Δ + offset             # NOTE the minus sign!
-                if -M <= n <= M:
-                    C[n][j, l] += half_rabi * lam_bwd * phase_factor
-    # Enforce Hermiticity
-    # for n in range(1, M+1):
-    #     C[-n] = C[n].conj().T
-    return C
-
-
-def floquet_propagator_square_rabi_one_period(fourier_coeffs: dict,
-                                          energies: torch.Tensor,
-                                          omega_d: float,
-                                          fourier_cutoff: int) -> torch.Tensor:
-    """
-    Build truncated Floquet Hamiltonian in the rotating frame and compute one-period propagator.
-    """
+def build_floquet_hamiltonian(
+    rabi: torch.Tensor, 
+    phase: torch.Tensor,
+    energies: torch.Tensor, 
+    couplings: torch.Tensor,
+    omega_d: float,
+    M: int
+) -> torch.Tensor:
     d = energies.numel()
-    M = fourier_cutoff
     # Prepare zero block
-    zero_block = torch.zeros((d, d), dtype=torch.cfloat)
     # Collect all Fourier blocks (drive + H0 later)
-    C_total = {n: fourier_coeffs.get(n, zero_block.clone())
-               for n in range(-M, M+1)}
 
-    # Static H0 in rotating frame: diag(energies - j*omega_d)
-    levels = torch.arange(d, dtype=energies.dtype)
-    H0_rot = energies - levels * omega_d
-    C_total[0] = C_total[0] + torch.diag(H0_rot).to(torch.cfloat)
-
+    C_0 = torch.diag(energies)
+    C_1 = (rabi / 2) * couplings * torch.exp(1j * phase)
+    C_m1 = (rabi / 2) * couplings * torch.exp(-1j * phase)
     # Assemble Floquet Hamiltonian
     N = (2*M + 1) * d
-    H_F = torch.zeros((N, N), dtype=torch.cfloat)
+    H_F = torch.zeros((N, N), dtype=torch.complex128, device=energies.device)
     for m in range(-M, M+1):
         row = (m + M) * d
         for n in range(-M, M+1):
             col = (n + M) * d
             idx = m - n
-            block = C_total.get(idx, zero_block)
-            H_F[row:row + d, col:col + d] = block
-        H_F[row:row + d, row:row + d] += m * omega_d * torch.eye(d, dtype=torch.cfloat) 
+            if idx == 0:
+                block = C_0
+            elif idx == 1:
+                block = C_1
+            elif idx == -1:
+                block = C_m1
+            else:
+                block = None
+            if block is not None:
+                H_F[row:row + d, col:col + d] = block
+        H_F[row:row + d, row:row + d] += \
+            m * omega_d * torch.eye(d, dtype=torch.complex128, device=energies.device) 
+    return H_F
 
-    T = 2 * math.pi / omega_d  # one period of the drive
-    return get_physical_propagator_strong_field(H_F, T, d, M)
-
-
-def get_physical_propagator_strong_field(H_F, T, d, M):
+def get_physical_propagator_strong_field(H_F, time, floquet_cutoff):
     # 1. Diagonalize Floquet Hamiltonian
-    epsilon, psi = torch.linalg.eigh(H_F)
+    epsilon, psi = torch.linalg.eigh(H_F)  # shape: [(2M+1)d, (2M+1)d]
+    d = H_F.size(0) // (2 * floquet_cutoff + 1)
     
-    # 2. Initialize physical propagator
-    U_phys = torch.zeros((d, d), dtype=torch.complex128)
+    # 3. Initialize physical propagator
+    U_phys = torch.zeros((d, d), dtype=torch.complex128, device=H_F.device)
     
-    # 3. Sum over all Floquet eigenstates
-    for alpha in range((2*M+1)*d):
-        # Extract eigenstate components
-        psi_alpha = psi[:, alpha]
+    # 4. Reshape psi for easier indexing
+    psi = psi.view((2*floquet_cutoff+1), d, -1)  # shape: [(2M+1), d, (2M+1)d]
+
+    # 5. Loop over Floquet eigenstates
+    for alpha in range((2*floquet_cutoff+1)*d):
+        psi_alpha = psi[:, :, alpha]  # shape: [(2M+1), d]
         
-        # Compute contribution to propagator
-        phase = torch.exp(-1j * epsilon[alpha] * T)
-        
-        # Sum over all Fourier sectors m
-        for j in range(d):
-            for k in range(d):
-                contrib = 0
-                for m in range(-M, M+1):
-                    idx_jm = j + (m + M) * d
-                    idx_k0 = k + M * d  # m=0 for initial state
-                    contrib += psi_alpha[idx_jm] * torch.conj(psi_alpha[idx_k0])
-                
-                U_phys[j, k] += phase * contrib
-    
+        # psi_alpha_m0: shape [d] for m = 0 sector
+        psi_alpha_m0 = psi_alpha[floquet_cutoff, :]  # m = 0
+
+        # Compute outer product of psi_alpha summed over all m
+        contrib = torch.einsum('mj,k->jk', psi_alpha, torch.conj(psi_alpha_m0))
+        # Add contribution with the phase
+        U_phys += torch.exp(-1j * epsilon[alpha] * time) * contrib
+
     return U_phys
 
 
-if __name__ == "__main__":
-    dev, dtype = "cuda", torch.complex128
-    n_levels = 6
 
-    # From Table I - complete population transfer
-    rabi_frequencies = np.array([.01])
+def floquet_propagator_square_sequence_stroboscopic(
+    rabi_frequencies: Sequence[float],
+    phases: Sequence[float],
+    pulse_duration_periods: Sequence[int],
+    energies: torch.Tensor,
+    lambdas_full: torch.Tensor,
+    omega_d: float,
+    floquet_cutoff: int,
+    device: Optional[torch.device] = None
+) -> torch.Tensor:
+    """
+    Compute the total propagator for a sequence of square pulses, each lasting an integer number
+    of periods of the drive frequency omega_d.
 
-    phases = np.array([.5345234]) * np.pi
+    Parameters:
+        rabi_frequencies: List of Rabi frequencies (one per pulse).
+        phases: List of phases (one per pulse).
+        pulse_duration_periods: List of pulse durations in number of periods (one per pulse).
+        energies: Tensor of energies of the system (typically shape (n,)).
+        lambdas_full: Tensor of couplings between states (shape compatible with Hamiltonian).
+        omega_d: Drive frequency.
+        floquet_cutoff: Fourier cutoff used in Floquet formalism.
 
-    total_time = 2 * np.pi 
-    delta = -0.0429
-    
-    
-    EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(delta)
-    energies, lambdas_full = TransmonCore.compute_transmon_parameters(
-        n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
-    )
+    Returns:
+        A PyTorch tensor representing the total propagator after applying all pulses in sequence.
+    """
+    assert len(rabi_frequencies) == len(phases) == len(pulse_duration_periods), \
+        "Mismatched input lengths for rabi_frequencies, phases, and pulse_duration_periods."
+    if device is None:
+        device = energies.device
 
-    
-    rabi_frequencies = torch.tensor(rabi_frequencies, dtype=torch.float64, requires_grad=True)
-    phases = torch.tensor(phases, dtype=torch.float64, requires_grad=True)
-    
-    
-    energies = torch.tensor(energies, dtype=torch.float64)
-    lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128)   
-    # Compute Fourier coefficients
-    fourier_coeffs = compute_fourier_coeffs(rabi_frequencies[0], phases[0], lambdas_full, 200)
+    dtype = energies.dtype if energies.is_complex() else torch.complex128
+    total_propagator = torch.eye(energies.shape[0], dtype=dtype, device=device)
+
+    for rabi, phase, duration in zip(rabi_frequencies, phases, pulse_duration_periods):
+        # Compute single-period propagator
+        U_single = floquet_propagator_square_rabi(
+            rabi,
+            phase,
+            energies,
+            lambdas_full,
+            omega_d,
+            floquet_cutoff
+        )
+
+        # Raise to the power of duration (number of periods)
+        U_powered = torch.matrix_power(U_single, duration)
+
+        # Compose with the total propagator
+        total_propagator = U_powered @ total_propagator
+
+    return total_propagator
 
 
-    # Compute Floquet propagator for one period
-    U = floquet_propagator_square_rabi_one_period(fourier_coeffs, energies, 1, 200)
-    print("Floquet propagator for one period:")
-    print(U)
+
+def floquet_propagator_square_sequence(
+    rabi_frequencies: Sequence[float],
+    phases: Sequence[float],
+    pulse_durations: Sequence[float],
+    energies: torch.Tensor,
+    lambdas_full: torch.Tensor,
+    omega_d: float,
+    floquet_cutoff: int,
+    device: Optional[torch.device] = None
+) -> torch.Tensor:
+    """
+    Compute the total propagator for a sequence of square pulses, each lasting an integer number
+    of periods of the drive frequency omega_d.
+
+    Parameters:
+        rabi_frequencies: List of Rabi frequencies (one per pulse).
+        phases: List of phases (one per pulse).
+        pulse_durations: List of pulse durations (one per pulse).
+        energies: Tensor of energies of the system (typically shape (n,)).
+        lambdas_full: Tensor of couplings between states (shape compatible with Hamiltonian).
+        omega_d: Drive frequency.
+        floquet_cutoff: Fourier cutoff used in Floquet formalism.
+
+    Returns:
+        A PyTorch tensor representing the total propagator after applying all pulses in sequence.
+    """
+    assert len(rabi_frequencies) == len(phases) == len(pulse_durations), \
+        "Mismatched input lengths for rabi_frequencies, phases, and pulse_duration_periods."
+
+    if device is None:
+        device = energies.device
+    dtype = energies.dtype if energies.is_complex() else torch.complex128
+    total_propagator = torch.eye(energies.shape[0], dtype=dtype, device=device)
+
+    for rabi, phase, duration in zip(rabi_frequencies, phases, pulse_durations):
+        # Compute single-period propagator
+        U_pulse = floquet_propagator_square_rabi(
+            rabi,
+            phase,
+            energies,
+            lambdas_full,
+            omega_d,
+            floquet_cutoff,
+            time=duration
+        )
+        # Compose with the total propagator
+        total_propagator = U_pulse @ total_propagator
+
+    return total_propagator

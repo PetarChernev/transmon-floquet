@@ -268,20 +268,20 @@ This gives us the propagator for one period in the original transmon space!
 Implement a function floquet_hamiltonian_const_rabi_period which computes the propagator for a single period of the drive field. Compute the Fourier coefficient in a separate function and pass them to the main one so they can be reused.
 
 ```
-def compute_fourier_coeffs(rabi, phase, couplings, fourier_cutoff):
+def compute_fourier_coeffs(rabi, phase, couplings, floquet_cutoff):
     """
     Compute the Fourier coefficient matrices C^{(n)} for the drive Hamiltonian H1(t).
     Args:
         rabi (float): Rabi frequency of the drive.
         phase (float): Phase of the drive.
         couplings (torch.Tensor): Coupling strengths matrix \\lambda_{jl}, shape (d, d).
-        fourier_cutoff (int): Cutoff M for Fourier indices (n \\in [-M, M]).
+        floquet_cutoff (int): Cutoff M for Fourier indices (n \\in [-M, M]).
     Returns:
         dict: Mapping n -> C^{(n)} (torch.Tensor of shape (d, d), complex dtype).
     """
     
 
-def floquet_hamiltonian_const_rabi_period(fourier_coeffs, energies, omega_d, fourier_cutoff):
+def floquet_hamiltonian_const_rabi_period(fourier_coeffs, energies, omega_d, floquet_cutoff):
     """
     Compute the Floquet propagator U(T) for one period of a periodic drive using the truncated Floquet Hamiltonian.
 
@@ -289,7 +289,7 @@ def floquet_hamiltonian_const_rabi_period(fourier_coeffs, energies, omega_d, fou
         fourier_coeffs (dict): Mapping n -> C^{(n)} Fourier coefficient matrices of shape (d, d).
         energies (torch.Tensor): Energy levels \\mu_i of the unperturbed Hamiltonian H0, shape (d,).
         omega_d (float): Drive frequency (units of |0> -> |1> transition freq, \\omega_d = 2\\pi/T).
-        fourier_cutoff (int): Fourier index cutoff M.
+        floquet_cutoff (int): Fourier index cutoff M.
 
     Returns:
         torch.Tensor: Floquet propagator U of shape (d, d), complex dtype.

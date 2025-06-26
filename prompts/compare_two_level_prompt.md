@@ -300,13 +300,13 @@ import numpy as np
 def compute_fourier_coeffs(rabi: float,
                            phase: float,
                            couplings: torch.Tensor,
-                           fourier_cutoff: int) -> dict:
+                           floquet_cutoff: int) -> dict:
     """
     Compute the Fourier coefficient matrices C^{(n)} for the drive Hamiltonian H1(t),
     including static (n=0) drive pieces and enforcing Hermiticity.
     """
     d = couplings.shape[0]
-    M = fourier_cutoff
+    M = floquet_cutoff
     # Initialize coefficients for n in [-M..M]
     C = {n: torch.zeros((d, d), dtype=torch.cfloat) for n in range(-M, M+1)}
 
@@ -343,12 +343,12 @@ def compute_fourier_coeffs(rabi: float,
 def floquet_propagator_square_rabi_one_period(fourier_coeffs: dict,
                                           energies: torch.Tensor,
                                           omega_d: float,
-                                          fourier_cutoff: int) -> torch.Tensor:
+                                          floquet_cutoff: int) -> torch.Tensor:
     """
     Build truncated Floquet Hamiltonian in the rotating frame and compute one-period propagator.
     """
     d = energies.numel()
-    M = fourier_cutoff
+    M = floquet_cutoff
     # Prepare zero block
     zero_block = torch.zeros((d, d), dtype=torch.cfloat)
     # Collect all Fourier blocks (drive + H0 later)
