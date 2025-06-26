@@ -64,9 +64,9 @@ if __name__ == "__main__":
     n_levels = 6
 
     # From Table I - complete population transfer
-    rabi_frequencies = np.array([1])
+    rabi_frequencies = np.array([.01])
 
-    phases = np.array([1.5]) * np.pi
+    phases = np.array([.5345234]) * np.pi
 
     total_time = 2 * np.pi 
     delta = -0.0429
@@ -84,8 +84,8 @@ if __name__ == "__main__":
         n_levels=n_levels,
         total_time=total_time,
         pulse_type="square",
-        n_time_steps=50000,
-        use_rwa=False,
+        n_time_steps=5000,
+        use_rwa=True,
     )
     
     
@@ -96,10 +96,10 @@ if __name__ == "__main__":
     energies = torch.tensor(energies, dtype=torch.float64)
     lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128)   
     # Compute Fourier coefficients
-    fourier_coeffs = compute_fourier_coeffs(rabi_frequencies[0], phases[0], lambdas_full, 100)
+    fourier_coeffs = compute_fourier_coeffs(rabi_frequencies[0], phases[0], lambdas_full, 20)
 
 
     # Compute Floquet propagator for one periodz
-    U = floquet_propagator_square_rabi_one_period(fourier_coeffs, energies, 1, 100)
+    U = floquet_propagator_square_rabi_one_period(fourier_coeffs, energies, 1, 20)
     
     print(f"Fidelity: {unitary_fidelity(unitary_est, U)}")

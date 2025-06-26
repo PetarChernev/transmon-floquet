@@ -2,6 +2,8 @@ import math
 import torch
 import numpy as np
 
+from transmon_core import TransmonCore
+
 def compute_fourier_coeffs(rabi: float,
                            phase: float,
                            couplings: torch.Tensor,
@@ -108,3 +110,38 @@ def get_physical_propagator_strong_field(H_F, T, d, M):
                 U_phys[j, k] += phase * contrib
     
     return U_phys
+
+
+if __name__ == "__main__":
+    dev, dtype = "cuda", torch.complex128
+    n_levels = 6
+
+    # From Table I - complete population transfer
+    rabi_frequencies = np.array([.01])
+
+    phases = np.array([.5345234]) * np.pi
+
+    total_time = 2 * np.pi 
+    delta = -0.0429
+    
+    
+    EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(delta)
+    energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+        n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
+    )
+
+    
+    rabi_frequencies = torch.tensor(rabi_frequencies, dtype=torch.float64, requires_grad=True)
+    phases = torch.tensor(phases, dtype=torch.float64, requires_grad=True)
+    
+    
+    energies = torch.tensor(energies, dtype=torch.float64)
+    lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128)   
+    # Compute Fourier coefficients
+    fourier_coeffs = compute_fourier_coeffs(rabi_frequencies[0], phases[0], lambdas_full, 200)
+
+
+    # Compute Floquet propagator for one period
+    U = floquet_propagator_square_rabi_one_period(fourier_coeffs, energies, 1, 200)
+    print("Floquet propagator for one period:")
+    print(U)

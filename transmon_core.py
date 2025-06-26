@@ -6,21 +6,6 @@ import torch
 
 class TransmonCore:
     @staticmethod
-    def duffing_energies(levels: int, alpha: float, *, dtype, device):
-        n = torch.arange(levels, dtype=torch.float64, device=device)
-        e = n - 0.5 * alpha * n * (n - 1)
-        return torch.diag(e).to(dtype)
-
-    @staticmethod
-    def ladder(levels: int, *, dtype, device):
-        a = torch.zeros((levels, levels), dtype=torch.float64, device=device)
-        for k in range(1, levels):
-            a[k - 1, k] = math.sqrt(k)
-        a = a.to(dtype)
-        return a, a.conj().T
-
-    # ----- charge-basis diagonalisation ----------------------------------
-    @staticmethod
     def construct_transmon_hamiltonian_charge_basis(n_charge=30, EJ_EC_ratio=50):
         """
         Construct the transmon Hamiltonian in the charge basis (equation A1).
