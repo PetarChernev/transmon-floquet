@@ -63,6 +63,44 @@ def build_floquet_hamiltonian(
             m * omega_d * torch.eye(d, dtype=couplings.dtype, device=energies.device) 
     return H_F
 
+
+def build_floquet_hamiltonian_batch(
+    rabi: torch.Tensor, 
+    phase: torch.Tensor,
+    energies: torch.Tensor, 
+    couplings: torch.Tensor,
+    omega_d: float,
+    M: int
+) -> torch.Tensor:
+    d = energies.numel()
+    # Prepare zero block
+    # Collect all Fourier blocks (drive + H0 later)
+
+    C_0 = torch.diag(energies)
+    C_1 = (rabi / 2) * couplings * torch.exp(1j * phase)
+    C_m1 = (rabi / 2) * couplings * torch.exp(-1j * phase)
+    # Assemble Floquet Hamiltonian
+    N = (2*M + 1) * d
+    H_F = torch.zeros((N, N), dtype=couplings.dtype, device=energies.device)
+    for m in range(-M, M+1):
+        row = (m + M) * d
+        for n in range(-M, M+1):
+            col = (n + M) * d
+            idx = m - n
+            if idx == 0:
+                block = C_0
+            elif idx == 1:
+                block = C_1
+            elif idx == -1:
+                block = C_m1
+            else:
+                block = None
+            if block is not None:
+                H_F[row:row + d, col:col + d] = block
+        H_F[row:row + d, row:row + d] += \
+            m * omega_d * torch.eye(d, dtype=couplings.dtype, device=energies.device) 
+    return H_F
+
 def get_physical_propagator(H_F, floquet_cutoff, omega_d):
     """
     Parameters:
@@ -115,7 +153,6 @@ def floquet_propagator_square_sequence_stroboscopic(
         device = energies.device
 
     total_propagator = torch.eye(energies.shape[0], dtype=lambdas_full.dtype, device=device)
-
     for rabi, phase, duration in zip(rabi_frequencies, phases, pulse_durations_periods):
         # Compute single-period propagator
         U_single = floquet_propagator_square_rabi(
@@ -134,7 +171,6 @@ def floquet_propagator_square_sequence_stroboscopic(
         total_propagator = U_powered @ total_propagator
 
     return total_propagator
-
 
 
 def floquet_propagator_square_sequence(

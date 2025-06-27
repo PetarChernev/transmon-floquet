@@ -12,7 +12,7 @@ if __name__ == "__main__":
 
     target = np.array([[1, 1], [1, -1]]) / np.sqrt(2)
 
-    n_levels = 2
+    n_levels = 6
     EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
     energies, lambdas_full = TransmonCore.compute_transmon_parameters(
         n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
@@ -50,7 +50,7 @@ if __name__ == "__main__":
         options={
             "atol": 1e-12,
             "rtol": 1e-12,
-            "nsteps": 20000
+            "nsteps": 200000
         }
     )
 
@@ -58,8 +58,8 @@ if __name__ == "__main__":
     # collect all propagators
     Us = {
         # "strob":               U_strob,
-        "general":             U_general,
-        "qutip_general":       U_qutip_general,
+        "general":             U_general[:2, :2],
+        "qutip_general":       U_qutip_general[:2, :2],
         "target": target
         # "qutip_strob":         U_qutip_strob,
     }

@@ -24,7 +24,7 @@ energies, lambdas_full = TransmonCore.compute_transmon_parameters(
 )
 
 energies = torch.tensor(energies, dtype=torch.float64, device=device)
-lambdas_full = torch.tensor(lambdas_full, dtype=torch.float64, device=device)
+lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128, device=device)
 
 omega_d = 1.0  # nominal drive frequency, rad s^-1
 floquet_cutoff: int = 25
@@ -68,7 +68,6 @@ TWO_PI = 2.0 * torch.pi
 
 def fidelity(U: torch.Tensor, U_target: torch.Tensor):
     """Gate fidelity |Tr(U^dagger U_target)|^2 / d^2."""
-    d = U.shape[0]
     fid = torch.abs(torch.trace(U.conj().T @ U_target)) / U.shape[0]
     return fid.real
 
