@@ -1,9 +1,0 @@
-README.md
-hybrid_optimization.py
-setup.py
-transmon_core.py
-transmon_dynamics_qutip.py
-transmon_floquet.egg-info/PKG-INFO
-transmon_floquet.egg-info/SOURCES.txt
-transmon_floquet.egg-info/dependency_links.txt
-transmon_floquet.egg-info/top_level.txt

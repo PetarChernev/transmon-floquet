@@ -1,21 +1,21 @@
-import math
+import numpy as np
 import torch
 
 from typing import Optional, Sequence
+
+from transmon.transmon_dynamics_qutip import pulse_sequence_qutip
 
 def floquet_propagator_square_rabi(
     rabi: torch.Tensor, 
     phase: torch.Tensor,
     energies: torch.Tensor, 
     couplings: torch.Tensor,
-    omega_d: float,
-    floquet_cutoff: int,
-    time: Optional[float] = None
+    omega_d: torch.Tensor,
+    floquet_cutoff: int
 ) -> torch.Tensor:
     """
-    Build truncated Floquet Hamiltonian in the lab frame.
+    Builds the propagator for a single period of the cosine drive with frequency omega_d
     """
-
     H_F = build_floquet_hamiltonian(
         rabi, 
         phase,
@@ -24,9 +24,7 @@ def floquet_propagator_square_rabi(
         omega_d,
         floquet_cutoff
     )
-    if time is None:
-        time = 2 * math.pi / omega_d  # one period of the drive
-    return get_physical_propagator_strong_field(H_F, time, floquet_cutoff)
+    return get_physical_propagator(H_F, floquet_cutoff, omega_d)
 
 def build_floquet_hamiltonian(
     rabi: torch.Tensor, 
@@ -65,29 +63,22 @@ def build_floquet_hamiltonian(
             m * omega_d * torch.eye(d, dtype=torch.complex128, device=energies.device) 
     return H_F
 
-def get_physical_propagator_strong_field(H_F, time, floquet_cutoff):
-    # 1. Diagonalize Floquet Hamiltonian
-    epsilon, psi = torch.linalg.eigh(H_F)  # shape: [(2M+1)d, (2M+1)d]
-    d = H_F.size(0) // (2 * floquet_cutoff + 1)
-    
-    # 3. Initialize physical propagator
+def get_physical_propagator(H_F, floquet_cutoff, omega_d):
+    """
+    Parameters:
+    H_F: Floquet Hamiltonian.
+    time: Final time at which to compute the propagator U(time, 0)
+    floquet_cutoff: M
+    omega_d: Frequency of the periodic physical Hamiltonian, T = 2 * pi / omega_d 
+    """
+    d = H_F.shape[0] // (2 * floquet_cutoff + 1)
+    M = floquet_cutoff
+    U_F = torch.matrix_exp(-1j * H_F * 2 * torch.pi / omega_d)
     U_phys = torch.zeros((d, d), dtype=torch.complex128, device=H_F.device)
-    
-    # 4. Reshape psi for easier indexing
-    psi = psi.view((2*floquet_cutoff+1), d, -1)  # shape: [(2M+1), d, (2M+1)d]
-
-    # 5. Loop over Floquet eigenstates
-    for alpha in range((2*floquet_cutoff+1)*d):
-        psi_alpha = psi[:, :, alpha]  # shape: [(2M+1), d]
-        
-        # psi_alpha_m0: shape [d] for m = 0 sector
-        psi_alpha_m0 = psi_alpha[floquet_cutoff, :]  # m = 0
-
-        # Compute outer product of psi_alpha summed over all m
-        contrib = torch.einsum('mj,k->jk', psi_alpha, torch.conj(psi_alpha_m0))
-        # Add contribution with the phase
-        U_phys += torch.exp(-1j * epsilon[alpha] * time) * contrib
-
+    for m in range(-M, M+1):
+        m_idx = m + M
+        block_m0 = U_F[m_idx*d:(m_idx+1)*d, M*d:(M+1)*d]
+        U_phys += block_m0
     return U_phys
 
 
@@ -95,7 +86,7 @@ def get_physical_propagator_strong_field(H_F, time, floquet_cutoff):
 def floquet_propagator_square_sequence_stroboscopic(
     rabi_frequencies: Sequence[float],
     phases: Sequence[float],
-    pulse_duration_periods: Sequence[int],
+    pulse_durations_periods: Sequence[int],
     energies: torch.Tensor,
     lambdas_full: torch.Tensor,
     omega_d: float,
@@ -109,7 +100,7 @@ def floquet_propagator_square_sequence_stroboscopic(
     Parameters:
         rabi_frequencies: List of Rabi frequencies (one per pulse).
         phases: List of phases (one per pulse).
-        pulse_duration_periods: List of pulse durations in number of periods (one per pulse).
+        pulse_durations_periods: List of pulse durations in number of periods (one per pulse).
         energies: Tensor of energies of the system (typically shape (n,)).
         lambdas_full: Tensor of couplings between states (shape compatible with Hamiltonian).
         omega_d: Drive frequency.
@@ -118,15 +109,15 @@ def floquet_propagator_square_sequence_stroboscopic(
     Returns:
         A PyTorch tensor representing the total propagator after applying all pulses in sequence.
     """
-    assert len(rabi_frequencies) == len(phases) == len(pulse_duration_periods), \
-        "Mismatched input lengths for rabi_frequencies, phases, and pulse_duration_periods."
+    assert len(rabi_frequencies) == len(phases) == len(pulse_durations_periods), \
+        "Mismatched input lengths for rabi_frequencies, phases, and pulse_durations_periods."
     if device is None:
         device = energies.device
 
     dtype = energies.dtype if energies.is_complex() else torch.complex128
     total_propagator = torch.eye(energies.shape[0], dtype=dtype, device=device)
 
-    for rabi, phase, duration in zip(rabi_frequencies, phases, pulse_duration_periods):
+    for rabi, phase, duration in zip(rabi_frequencies, phases, pulse_durations_periods):
         # Compute single-period propagator
         U_single = floquet_propagator_square_rabi(
             rabi,
@@ -174,7 +165,7 @@ def floquet_propagator_square_sequence(
         A PyTorch tensor representing the total propagator after applying all pulses in sequence.
     """
     assert len(rabi_frequencies) == len(phases) == len(pulse_durations), \
-        "Mismatched input lengths for rabi_frequencies, phases, and pulse_duration_periods."
+        "Mismatched input lengths for rabi_frequencies, phases, and pulse_durations_periods."
 
     if device is None:
         device = energies.device
@@ -196,3 +187,83 @@ def floquet_propagator_square_sequence(
         total_propagator = U_pulse @ total_propagator
 
     return total_propagator
+
+if __name__ == "__main__":
+    device = 'cuda'
+    omega_d = 1.5
+
+
+    test_params = dict(
+        rabi_frequencies=torch.tensor([10.05, 0.10, 0.05], dtype=torch.complex128, device=device),
+        phases=torch.tensor([0.1231, np.pi/2, np.pi], dtype=torch.complex128, device=device),
+        energies=torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.complex128, device=device),
+        lambdas_full=torch.tensor([
+                [0., 1., 0., 0., 0., 0.],
+                [1., 0., 1., 0., 0., 0.],
+                [0., 1., 0., 1., 0., 0.],
+                [0., 0., 1., 0., 1., 0.],
+                [0., 0., 0., 1., 0., 1.],
+                [0., 0., 0., 0., 1., 0.],
+            ], dtype=torch.complex128, device=device),
+        omega_d=torch.tensor([omega_d], dtype=torch.complex128, device=device),
+        floquet_cutoff=3 
+    )
+
+    time_pulse_durations = [4.0, 5.0, 6.0]
+
+    U_general = floquet_propagator_square_sequence(
+        **test_params,
+        pulse_durations=time_pulse_durations, 
+    ).cpu().numpy()
+
+    U_qutip_general = pulse_sequence_qutip(
+        rabi_frequencies=test_params["rabi_frequencies"].cpu().numpy(),
+        phases=test_params["phases"].cpu().numpy(),
+        pulse_durations=time_pulse_durations, 
+        epsilon=test_params["energies"].cpu().numpy(),
+        lambda_matrix=test_params["lambdas_full"].cpu().numpy(),
+        omega_d=omega_d,
+        options={
+            "atol": 1e-12,
+            "rtol": 1e-12,
+            "nsteps": 20000
+        }
+    ).full()
+
+
+    import itertools
+    import numpy as np
+
+    # collect all propagators
+    Us = {
+        # "strob":               U_strob,
+        "general":             U_general,
+        "qutip_general":       U_qutip_general,
+        # "qutip_strob":         U_qutip_strob,
+    }
+
+    dim = U_qutip_general.shape[0]
+    I   = np.eye(dim)
+
+    # 1) compute unitarity errors for each U: ‖U†U − I‖
+    unit_err = {
+        name: np.linalg.norm(U.conj().T @ U - I).item()
+        for name, U in Us.items()
+    }
+
+    # 2) compute fidelities for each unordered pair (i<j):
+    #    F(U,V) = |Tr(U† V)|/dim
+    fidelities = {}
+    for (name1, U1), (name2, U2) in itertools.combinations(Us.items(), 2):
+        fid = np.abs(np.trace(U1.conj().T @ U2)) / dim
+        fidelities[f"{name1} ↔ {name2}"] = fid.item()
+
+    # 3) print results
+    print("Unitarity errors:")
+    for name, err in unit_err.items():
+        print(f"  {name:15s}: {err:.2e}")
+
+    print("\nPairwise fidelities:")
+    for pair, fid in fidelities.items():
+        print(f"  {pair:25s}: {fid:.12f}")
+

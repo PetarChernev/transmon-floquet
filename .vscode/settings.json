@@ -6,5 +6,5 @@
     "terminal.integrated.env.linux": {
       "PYTHONPATH": "${workspaceFolder}"
     },
-    "python.envFile": "${workspaceFolder}/.env"
+    "python.envFile": "${workspaceFolder}/.env",
 }

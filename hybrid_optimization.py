@@ -44,147 +44,6 @@ lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128)
 
 
 
-def make_transmon_composite_wrapper(
-    energies,
-    lambdas_full,
-    *,
-    n_levels=6,
-    total_time=20.0,
-    n_time_steps=2000,
-    pulse_type="square",
-    use_rwa=True,
-    use_pytorch=True
-):
-    """
-    Returns a function with the same interface as composite_unitary_torch(phi_list, A, eps, device, dtype),
-    but internally calls transmon_propagator_pytorch using fixed transmon parameters.
-    """
-    def wrapped(rabi_list, phi_list, eps=0.0, device="cpu", dtype=torch.complex128):
-
-        # Apply scaling
-        rabi_list = rabi_list * (1.0 + eps)
-       
-        if use_pytorch:
-            # Ensure input types are torch tensors
-            phi_tensor = torch.tensor(phi_list, dtype=torch.float64, device=device)
-            rabi_tensor = torch.tensor(rabi_list, dtype=torch.float64, device=device)
-        
-            return transmon_propagator_pytorch(
-                rabi_frequencies=rabi_tensor,
-                phases=phi_tensor,
-                energies=energies,
-                lambdas_full=lambdas_full,
-                n_levels=n_levels,
-                total_time=total_time,
-                n_time_steps=n_time_steps,
-                pulse_type=pulse_type,
-                use_rwa=use_rwa,
-                device=device
-            ).to(dtype=dtype)
-        else:
-            return simulate_transmon_propagator(
-                rabi_frequencies=rabi_list,
-                phases=phi_list,
-                energies=energies,
-                lambdas_full=lambdas_full,
-                n_levels=n_levels,
-                total_time=total_time,
-                n_time_steps=n_time_steps,
-                pulse_type=pulse_type,
-                use_rwa=use_rwa,
-            )
-    return wrapped
-
-
-unitary_function = make_transmon_composite_wrapper(
-    energies=energies,
-    lambdas_full=lambdas_full,
-    n_levels=6,
-    total_time=20.0 * 2 * np.pi * 7,
-    n_time_steps=5000,
-    pulse_type="square",
-    use_rwa=True
-)
-
-unitary_function_np = make_transmon_composite_wrapper(
-    energies=energies,
-    lambdas_full=lambdas_full,
-    n_levels=6,
-    total_time=20.0 * 2 * np.pi * 7,
-    n_time_steps=5000,
-    pulse_type="square",
-    use_rwa=True,
-    use_pytorch=False
-)
-
-# ----------------------------------------------------------------------------
-# 1) PyTorch pulse unitary (for GPU acceleration)
-# ----------------------------------------------------------------------------
-def pulse_unitary_torch(A, phi, eps=0.0, device='cpu', dtype=torch.complex128):
-    half = (A * (1.0 + eps)) / 2.0
-    c = torch.cos(half)
-    s = torch.sin(half)
-    exp_ip = torch.exp(-1j * phi)
-    exp_im = torch.exp(1j * phi)
-    U = torch.zeros((2, 2), dtype=dtype, device=device)
-    U[0, 0] = c
-    U[0, 1] = -1j * exp_ip * s
-    U[1, 0] = -1j * exp_im * s
-    U[1, 1] = c
-    return U
-
-# ----------------------------------------------------------------------------
-# 2) Composite sequence propagator (PyTorch version)
-# ----------------------------------------------------------------------------
-def composite_unitary_torch(phi_list, A, eps=0.0, device='cpu', dtype=torch.complex128):
-    U = torch.eye(2, dtype=dtype, device=device)
-    for phi in phi_list:
-        U = pulse_unitary_torch(A, phi, eps, device, dtype) @ U
-    zero_phi = torch.zeros((), dtype=phi_list.dtype, device=device)
-    U = unitary_function(A, zero_phi, eps, device, dtype) @ U
-    return U
-
-# ----------------------------------------------------------------------------
-# 3) Compute N derivatives of fidelity w.r.t. A
-# ----------------------------------------------------------------------------
-def compute_fidelity_derivatives(phi_list, A_val, N_derivs, device='cpu'):
-    dtype = torch.complex128
-    phi_tensor = torch.tensor(phi_list, dtype=torch.float64, device=device, requires_grad=True)
-    A = torch.tensor(A_val, dtype=torch.float64, device=device, requires_grad=True)
-    H = torch.tensor([[1, 1], [1, -1]], dtype=dtype, device=device) / np.sqrt(2)
-    U = unitary_function(phi_tensor, A, device=device, dtype=dtype)
-    inner = torch.trace(H.conj().T @ U[:2, :2])
-    F = torch.abs(inner) / 2.0
-    derivatives = []
-    current = F
-    for _ in range(N_derivs):
-        grad = torch.autograd.grad(current, A, create_graph=True, retain_graph=True)[0]
-        derivatives.append(grad)
-        current = grad
-    deriv_vals = [d.item() for d in derivatives]
-    return F.item(), deriv_vals
-
-# ----------------------------------------------------------------------------
-# 4) Compute fidelity and derivatives at multiple area scaling points
-# ----------------------------------------------------------------------------
-def compute_multi_point_derivatives(phi_param, A_param, N_derivs, area_scales, H, device='cpu', dtype_complex=torch.complex128):
-    all_values = []
-    for i, scale in enumerate(area_scales):
-        distance_from_edge = min(i, len(area_scales) - i - 1) + 1
-        scaled_A = A_param * scale
-        U = composite_unitary_torch(phi_param, scaled_A, device=device, dtype=dtype_complex)
-        inner = torch.trace(H.conj().T @ U)
-        F = torch.abs(inner) / 2.0
-        # Add fidelity to the list
-        all_values.append((1 - F) * distance_from_edge * 1000)
-        # Compute derivatives
-        current = F
-        for _ in range(N_derivs):
-            grad = torch.autograd.grad(current, A_param, create_graph=True, retain_graph=True)[0]
-            all_values.append(grad)
-            current = grad
-    return all_values
-
 # ----------------------------------------------------------------------------
 # 5) CMA-ES objective (fidelity only)
 # ----------------------------------------------------------------------------
@@ -272,23 +131,10 @@ def hybrid_parallel(N_pulses=13, N_derivs=2, n_cand=None, fidelity_target=0.9999
     tqdm.write(f"Running CMA-ES to generate {n_cand} candidates...")
     cma_sols, attempts = [], 0
     
-    # From Table I - complete population transfer
-    rabi_frequencies = np.array(
-        [31.651, 44.988, 69.97, 60.608, 66.029, 68.771, 69.562, 66.971]
-    )
-
-    rabi_frequencies = (
-        rabi_frequencies / 7000
-    )  # Convert to GHz from MHz and normalise by ω01
-
-    phases = np.array(
-        [0.1779, 0.0499, 0.1239, 0.2538, 0.2886, 0.1688,0.1645, 0.1234]
-    ) * np.pi
-    
     with Pool(cpu_count()) as pool:
         while len(cma_sols) < n_cand and attempts < 3*n_cand:
             attempts +=1
-            p0 = np.concatenate([rabi_frequencies, phases])
+            p0 = np.concatenate([np.random.random(N_pulses), np.random.random(N_pulses)])
             es = CMAEvolutionStrategy(p0,0.05,{'popsize':50,'maxiter':1000,'tolfun':1e-10,'verb_disp':0})
             losses = [cmaes_objective(p0)]  # Evaluate known good point
             sols = es.ask() 

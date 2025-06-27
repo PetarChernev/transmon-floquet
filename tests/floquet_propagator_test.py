@@ -1,9 +1,13 @@
-import pytest
+"""
+Tests the floquet theory proagator for non stroboscopic times.
+Currently not implemented.
+"""
 import torch
 import numpy as np
 
-from transmon_dynamics_qutip import compute_propagator_sequence_qutip
-from transmon_floquet_propagator import floquet_propagator_square_sequence, floquet_propagator_square_sequence_stroboscopic
+from transmon.transmon_dynamics_qutip import pulse_sequence_qutip
+from transmon.transmon_floquet_propagator import floquet_propagator_square_sequence, floquet_propagator_square_sequence_stroboscopic
+
 
 test_cases = [
     {
@@ -20,10 +24,10 @@ test_cases = [
         "desc": "Two-level system, strong drive",
         "energies": [0.0, 1.0],
         "lambdas_full": [[0.0, 1.0], [1.0, 0.0]],
-        "rabi_frequencies": [1.0],
+        "rabi_frequencies": [10.0],
         "phases": [0.0],
         "pulse_durations": [10.0],
-        "omega_d": 1.0,
+        "omega_d": 1.5,
         "floquet_cutoff": 50,
     },
     {
@@ -134,6 +138,7 @@ test_cases = [
         "omega_d": 1.0,
         "floquet_cutoff": 50,
     },
+    
 ]
 
 def compare_propagators(
@@ -155,30 +160,38 @@ def compare_propagators(
     phases = torch.tensor(phases, dtype=dtype, device=device)
     energies = torch.tensor(energies, dtype=dtype, device=device)
     lambdas_full = torch.tensor(lambdas_full, dtype=dtype, device=device)
+    omega_d = torch.tensor(omega_d, dtype=dtype, device=device)
 
-    # Compute Floquet propagator on CUDA
-    U_floquet = floquet_propagator_square_sequence(
-        rabi_frequencies,
-        phases,
-        pulse_durations,
-        energies,
-        lambdas_full,
-        omega_d,
-        floquet_cutoff,
-    )
-
-    # Convert energies and lambdas back to numpy for QuTiP
-    energies_np = energies.cpu().numpy()
-    lambdas_np = lambdas_full.cpu().numpy()
+    if all(isinstance(t, int) for t in pulse_durations):
+        # Compute Floquet propagator on CUDA
+        U_floquet = floquet_propagator_square_sequence_stroboscopic(
+            rabi_frequencies,
+            phases,
+            pulse_durations,
+            energies,
+            lambdas_full,
+            omega_d,
+            floquet_cutoff
+        )
+    else:
+        U_floquet = floquet_propagator_square_sequence(
+            rabi_frequencies,
+            phases,
+            pulse_durations,
+            energies,
+            lambdas_full,
+            omega_d,
+            floquet_cutoff
+        )
 
     # Compute numerical propagator with QuTiP
-    U_numerical = compute_propagator_sequence_qutip(
+    U_numerical = pulse_sequence_qutip(
         rabi_frequencies.cpu().numpy(),
         phases.cpu().numpy(),
         pulse_durations,
-        energies_np,
-        lambdas_np,
-        omega_d=omega_d,
+        energies.cpu().numpy(),
+        lambdas_full.cpu().numpy(),
+        omega_d=omega_d.cpu().numpy(),
         options={
             "atol": 1e-12,
             "rtol": 1e-12,
@@ -189,10 +202,7 @@ def compare_propagators(
     # Move numerical result to CUDA double tensor
     U_numerical = torch.from_numpy(U_numerical.full()).to(dtype=torch.complex128, device=device)
 
-    # Align global phase
-    phase_difference = torch.angle(torch.det(U_numerical)) - torch.angle(torch.det(U_floquet))
-    global_phase = torch.exp(-1j * phase_difference)
-    U_floquet_aligned = global_phase * U_floquet
+    U_floquet_aligned = U_floquet
 
     # Compute differences and fidelity
     diff = U_numerical - U_floquet_aligned
@@ -206,7 +216,6 @@ def compare_propagators(
         "U_numerical": U_numerical,
     }
 
-@pytest.mark.parametrize("case", test_cases, ids=[c['desc'] for c in test_cases])
 def test_propagator_accuracy(case):
     # Run comparison
     result = compare_propagators(
@@ -216,6 +225,7 @@ def test_propagator_accuracy(case):
         energies=case['energies'],
         lambdas_full=case['lambdas_full'],
         omega_d=case['omega_d'],
+        floquet_cutoff=200
     )
 
     U_num = result['U_numerical']
@@ -234,3 +244,12 @@ def test_propagator_accuracy(case):
     fidelity = result['fidelity']
     assert abs(1.0 - fidelity) <= max_err, \
         f"Fidelity deviation {abs(1.0 - fidelity)} exceeds tolerance {max_err}"
+
+
+if __name__ == "__main__":
+    raise NotImplementedError(
+        "The current implementation of the Floquet propagator only computes it at integer numbers of periods of the drive."
+    )
+
+    for case in test_cases:
+        test_propagator_accuracy(case)
