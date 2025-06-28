@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
     n_levels = 2
     EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
-    energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+    energies, couplings = TransmonCore.compute_transmon_parameters(
         n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
     )
 
@@ -83,7 +83,7 @@ if __name__ == "__main__":
         ],
         pulse_durations=[7,1,7], 
         epsilon=energies,
-        lambda_matrix=lambdas_full,
+        lambda_matrix=couplings,
         omega_d=omega_d,
         options={
             "atol": 1e-12,

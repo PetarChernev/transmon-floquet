@@ -14,13 +14,13 @@ if __name__ == "__main__":
 
     n_levels = 6
     EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
-    energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+    energies, couplings = TransmonCore.compute_transmon_parameters(
         n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
     )
     energies = torch.tensor(energies, dtype=torch.float64, device=device)
-    lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128, device=device)
+    couplings = torch.tensor(couplings, dtype=torch.complex128, device=device)
     omega_d       = 1.0                                 # driving frequency (rad s⁻¹)
-    floquet_cutoff: int = 40
+    floquet_cutoff: int = 50
 
     test_params = dict(
         rabi_frequencies=torch.tensor([0.95107027, 0.79220659, 1.0358085,  1.05042276, 1.0133318,  0.87797412,
@@ -28,7 +28,7 @@ if __name__ == "__main__":
         phases=torch.tensor([2.15531313, 4.82939254, 3.9763329,  1.28857258, 4.64092377, 3.82731991,
  1.45256058, 4.74845489], dtype=torch.float64, device=device),
         energies=energies,
-        lambdas_full=lambdas_full,
+        couplings=couplings,
         omega_d=torch.tensor([omega_d], dtype=torch.float64, device=device),
         floquet_cutoff=floquet_cutoff 
     )
@@ -45,7 +45,7 @@ if __name__ == "__main__":
         phases=test_params["phases"].cpu().numpy(),
         pulse_durations=time_pulse_durations, 
         epsilon=test_params["energies"].cpu().numpy(),
-        lambda_matrix=test_params["lambdas_full"].cpu().numpy(),
+        lambda_matrix=test_params["couplings"].cpu().numpy(),
         omega_d=omega_d,
         options={
             "atol": 1e-12,
@@ -64,7 +64,7 @@ if __name__ == "__main__":
         # "qutip_strob":         U_qutip_strob,
     }
 
-    dim = U_qutip_general.shape[0]
+    dim = 2
     I   = np.eye(dim)
 
     # 1) compute unitarity errors for each U: ‖U†U − I‖

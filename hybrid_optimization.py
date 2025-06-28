@@ -36,11 +36,11 @@ warnings.filterwarnings('ignore')
 n_levels = 6
 EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
 
-energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+energies, couplings = TransmonCore.compute_transmon_parameters(
     n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
 )
 energies = torch.tensor(energies, dtype=torch.float64)
-lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128)
+couplings = torch.tensor(couplings, dtype=torch.complex128)
 
 
 

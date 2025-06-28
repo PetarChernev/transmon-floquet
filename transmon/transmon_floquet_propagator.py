@@ -34,6 +34,18 @@ def build_floquet_hamiltonian(
     omega_d: float,
     M: int
 ) -> torch.Tensor:
+    """
+    Computes H_F for a single pulse with Rabi frequency rabi and phase phase.
+    Parameters:
+        rabi: Rabi frequency of the pulse.
+        phase: Phase of the pulse.
+        energies: Tensor of energies of the system (shape (d,)).
+        couplings: Tensor of couplings between states (shape (d, d)).
+        omega_d: Frequency of the periodic drive (shape (,)).
+        M: Fourier cutoff used in Floquet formalism.
+    Returns:
+        A PyTorch tensor representing the Floquet Hamiltonian H_F, shape ((2 * M + 1) * d, (2 * M + 1) * d).    
+    """
     d = energies.numel()
     # Prepare zero block
     # Collect all Fourier blocks (drive + H0 later)
@@ -63,43 +75,6 @@ def build_floquet_hamiltonian(
             m * omega_d * torch.eye(d, dtype=couplings.dtype, device=energies.device) 
     return H_F
 
-
-def build_floquet_hamiltonian_batch(
-    rabi: torch.Tensor, 
-    phase: torch.Tensor,
-    energies: torch.Tensor, 
-    couplings: torch.Tensor,
-    omega_d: float,
-    M: int
-) -> torch.Tensor:
-    d = energies.numel()
-    # Prepare zero block
-    # Collect all Fourier blocks (drive + H0 later)
-
-    C_0 = torch.diag(energies)
-    C_1 = (rabi / 2) * couplings * torch.exp(1j * phase)
-    C_m1 = (rabi / 2) * couplings * torch.exp(-1j * phase)
-    # Assemble Floquet Hamiltonian
-    N = (2*M + 1) * d
-    H_F = torch.zeros((N, N), dtype=couplings.dtype, device=energies.device)
-    for m in range(-M, M+1):
-        row = (m + M) * d
-        for n in range(-M, M+1):
-            col = (n + M) * d
-            idx = m - n
-            if idx == 0:
-                block = C_0
-            elif idx == 1:
-                block = C_1
-            elif idx == -1:
-                block = C_m1
-            else:
-                block = None
-            if block is not None:
-                H_F[row:row + d, col:col + d] = block
-        H_F[row:row + d, row:row + d] += \
-            m * omega_d * torch.eye(d, dtype=couplings.dtype, device=energies.device) 
-    return H_F
 
 def get_physical_propagator(H_F, floquet_cutoff, omega_d):
     """
@@ -126,7 +101,7 @@ def floquet_propagator_square_sequence_stroboscopic(
     phases: torch.Tensor,
     pulse_durations_periods: torch.Tensor,
     energies: torch.Tensor,
-    lambdas_full: torch.Tensor,
+    couplings: torch.Tensor,
     omega_d: torch.Tensor,
     floquet_cutoff: int,
     device: Optional[torch.device] = None
@@ -140,7 +115,7 @@ def floquet_propagator_square_sequence_stroboscopic(
         phases: List of phases (one per pulse).
         pulse_durations_periods: List of pulse durations in integer number of periods (one per pulse).
         energies: Tensor of energies of the system (typically shape (n,)).
-        lambdas_full: Tensor of couplings between states (shape compatible with Hamiltonian).
+        couplings: Tensor of couplings between states (shape compatible with Hamiltonian).
         omega_d: Drive frequency.
         floquet_cutoff: Fourier cutoff used in Floquet formalism.
 
@@ -152,14 +127,14 @@ def floquet_propagator_square_sequence_stroboscopic(
     if device is None:
         device = energies.device
 
-    total_propagator = torch.eye(energies.shape[0], dtype=lambdas_full.dtype, device=device)
+    total_propagator = torch.eye(energies.shape[0], dtype=couplings.dtype, device=device)
     for rabi, phase, duration in zip(rabi_frequencies, phases, pulse_durations_periods):
         # Compute single-period propagator
         U_single = floquet_propagator_square_rabi(
             rabi,
             phase,
             energies,
-            lambdas_full,
+            couplings,
             omega_d,
             floquet_cutoff
         )
@@ -178,7 +153,7 @@ def floquet_propagator_square_sequence(
     phases: Sequence[float],
     pulse_durations: Sequence[float],
     energies: torch.Tensor,
-    lambdas_full: torch.Tensor,
+    couplings: torch.Tensor,
     omega_d: float,
     floquet_cutoff: int,
     device: Optional[torch.device] = None
@@ -192,7 +167,7 @@ def floquet_propagator_square_sequence(
         phases: List of phases (one per pulse).
         pulse_durations: List of pulse durations (one per pulse).
         energies: Tensor of energies of the system (typically shape (n,)).
-        lambdas_full: Tensor of couplings between states (shape compatible with Hamiltonian).
+        couplings: Tensor of couplings between states (shape compatible with Hamiltonian).
         omega_d: Drive frequency.
         floquet_cutoff: Fourier cutoff used in Floquet formalism.
 
@@ -213,7 +188,7 @@ def floquet_propagator_square_sequence(
             rabi,
             phase,
             energies,
-            lambdas_full,
+            couplings,
             omega_d,
             floquet_cutoff,
             time=duration
@@ -232,7 +207,7 @@ if __name__ == "__main__":
         rabi_frequencies=torch.tensor([10.05, 0.10, 0.05], dtype=torch.complex128, device=device),
         phases=torch.tensor([0.1231, np.pi/2, np.pi], dtype=torch.complex128, device=device),
         energies=torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.complex128, device=device),
-        lambdas_full=torch.tensor([
+        couplings=torch.tensor([
                 [0., 1., 0., 0., 0., 0.],
                 [1., 0., 1., 0., 0., 0.],
                 [0., 1., 0., 1., 0., 0.],
@@ -256,7 +231,7 @@ if __name__ == "__main__":
         phases=test_params["phases"].cpu().numpy(),
         pulse_durations=time_pulse_durations, 
         epsilon=test_params["energies"].cpu().numpy(),
-        lambda_matrix=test_params["lambdas_full"].cpu().numpy(),
+        lambda_matrix=test_params["couplings"].cpu().numpy(),
         omega_d=omega_d,
         options={
             "atol": 1e-12,

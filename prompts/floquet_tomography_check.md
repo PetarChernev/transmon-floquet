@@ -308,7 +308,7 @@ def simulate_transmon_dynamics(
     rabi_frequencies,
     phases,
     energies,
-    lambdas_full,
+    couplings,
     *,
     n_levels=6,
     total_time=20.0,
@@ -323,7 +323,7 @@ def simulate_transmon_dynamics(
     if use_rwa:
         lambdas = np.zeros(n_levels)
         for j in range(1, n_levels):
-            lambdas[j] = lambdas_full[j, j - 1]
+            lambdas[j] = couplings[j, j - 1]
     # Time evolution
     n_pulses = len(rabi_frequencies)
     pulse_duration = total_time / n_pulses
@@ -356,7 +356,7 @@ def simulate_transmon_dynamics(
             e_pos = np.exp(1j * delta * omega_d * t)
             e_neg = np.exp(-1j * delta * omega_d * t)
             # drive coupling piece: λ_{jl} e^{iΔωt} + λ_{lj} e^{-iΔωt}
-            H_drive = lambdas_full * e_pos + lambdas_full.T * e_neg
+            H_drive = couplings * e_pos + couplings.T * e_neg
             # time-dependent envelope: (Ω) cos(ω_d t + φ)
             drive_factor = omega_R * np.cos(omega_d * t + phases[pulse_idx])
             # add all four sidebands at once
@@ -433,14 +433,14 @@ if **name** == "__main__":
     
     
     EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(delta)
-    energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+    energies, couplings = TransmonCore.compute_transmon_parameters(
         n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
     )
     unitary_est = estimate_transmon_unitary(
         rabi_frequencies,
         phases,
         energies,
-        lambdas_full,
+        couplings,
         n_levels=n_levels,
         total_time=total_time,
         pulse_type="square",
@@ -454,9 +454,9 @@ if **name** == "__main__":
     
     
     energies = torch.tensor(energies, dtype=torch.float64)
-    lambdas_full = torch.tensor(lambdas_full, dtype=torch.complex128)   
+    couplings = torch.tensor(couplings, dtype=torch.complex128)   
     # Compute Fourier coefficients
-    fourier_coeffs = compute_fourier_coeffs(rabi_frequencies[0], phases[0], lambdas_full, 100)
+    fourier_coeffs = compute_fourier_coeffs(rabi_frequencies[0], phases[0], couplings, 100)
     # Compute Floquet propagator for one period
     U = floquet_hamiltonian_const_rabi_period(fourier_coeffs, energies, 1, 100)
     

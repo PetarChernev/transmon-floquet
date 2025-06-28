@@ -36,11 +36,11 @@ U_TARGEET_DAGGER = U_TARGET.conj().T
 n_pulses = 9
 n_levels = 2
 EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
-energies, lambdas_full = TransmonCore.compute_transmon_parameters(
+energies, couplings = TransmonCore.compute_transmon_parameters(
     n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
 )
 energies = torch.tensor(energies, dtype=dtype_real, device=device)
-lambdas_full = torch.tensor(lambdas_full, dtype=dtype_complex, device=device)
+couplings = torch.tensor(couplings, dtype=dtype_complex, device=device)
 
 omega_d = 1.0                                
 floquet_cutoff: int = 25
@@ -56,7 +56,7 @@ max_total_periods = 2000
 
 propagator_static_args = dict(
     energies=energies,
-    lambdas_full=lambdas_full,
+    couplings=couplings,
     omega_d=omega_d,
     floquet_cutoff=floquet_cutoff
 )

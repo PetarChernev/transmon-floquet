@@ -8,7 +8,7 @@ def floquet_propagator_square_sequence_stroboscopic(
     phases: torch.Tensor[float],
     pulse_durations_periods: torch.Tensor[int],
     energies: torch.Tensor,
-    lambdas_full: torch.Tensor,
+    couplings: torch.Tensor,
     omega_d: float,
     floquet_cutoff: int,
     device: Optional[torch.device] = None

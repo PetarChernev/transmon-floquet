@@ -56,22 +56,22 @@ class TransmonCore:
 
         # Extract first n_levels
         energies = eigenvalues[:n_levels]
-        lambdas_full = n_op_energy[:n_levels, :n_levels]
+        couplings = n_op_energy[:n_levels, :n_levels]
 
         # Normalise so ω01 = 1
         omega_01 = energies[1] - energies[0]
         energies = (energies - energies[0]) / omega_01
         
-        if not [np.isclose(lambdas_full[i, i], 0) for i in range(n_levels)]:
+        if not [np.isclose(couplings[i, i], 0) for i in range(n_levels)]:
             print("Warning: λ_ii are not all zero!")
 
         # For transmon, matrix elements should be real
-        if np.max(np.abs(np.imag(lambdas_full))) > 1e-10:
+        if np.max(np.abs(np.imag(couplings))) > 1e-10:
             print(
-                f"Warning: Imaginary parts found, max = {np.max(np.abs(np.imag(lambdas_full)))}"
+                f"Warning: Imaginary parts found, max = {np.max(np.abs(np.imag(couplings)))}"
             )
 
-        return energies, np.real(lambdas_full)
+        return energies, np.real(couplings)
 
 
     @staticmethod

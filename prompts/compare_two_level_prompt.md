@@ -446,9 +446,9 @@ U_sim = U_t[-1]
 
 
 energies = torch.tensor([-beta/2, beta/2], dtype=torch.float64)
-lambdas_full = torch.tensor([[0, g/2], [g/2, 0]], dtype=torch.complex128)   
+couplings = torch.tensor([[0, g/2], [g/2, 0]], dtype=torch.complex128)   
 # Compute Fourier coefficients
-fourier_coeffs = compute_fourier_coeffs(torch.tensor(g, dtype=torch.float64), torch.tensor(0, dtype=torch.float64), lambdas_full, 20)
+fourier_coeffs = compute_fourier_coeffs(torch.tensor(g, dtype=torch.float64), torch.tensor(0, dtype=torch.float64), couplings, 20)
 
 
 # Compute Floquet propagator for one periodz

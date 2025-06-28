@@ -88,7 +88,7 @@ def floquet_propagator_square_sequence_stroboscopic(
     phases: Sequence[float],
     pulse_durations_periods: Sequence[int],
     energies: torch.Tensor,
-    lambdas_full: torch.Tensor,
+    couplings: torch.Tensor,
     omega_d: float,
     floquet_cutoff: int,
     device: Optional[torch.device] = None
@@ -102,7 +102,7 @@ def floquet_propagator_square_sequence_stroboscopic(
         phases: List of phases (one per pulse).
         pulse_durations_periods: List of pulse durations in number of periods (one per pulse).
         energies: Tensor of energies of the system (typically shape (n,)).
-        lambdas_full: Tensor of couplings between states (shape compatible with Hamiltonian).
+        couplings: Tensor of couplings between states (shape compatible with Hamiltonian).
         omega_d: Drive frequency.
         floquet_cutoff: Fourier cutoff used in Floquet formalism.
 
@@ -123,7 +123,7 @@ def floquet_propagator_square_sequence_stroboscopic(
             rabi,
             phase,
             energies,
-            lambdas_full,
+            couplings,
             omega_d,
             floquet_cutoff
         )
@@ -143,7 +143,7 @@ def floquet_propagator_square_sequence(
     phases: Sequence[float],
     pulse_durations: Sequence[float],
     energies: torch.Tensor,
-    lambdas_full: torch.Tensor,
+    couplings: torch.Tensor,
     omega_d: float,
     floquet_cutoff: int,
     device: Optional[torch.device] = None
@@ -157,7 +157,7 @@ def floquet_propagator_square_sequence(
         phases: List of phases (one per pulse).
         pulse_durations: List of pulse durations (one per pulse).
         energies: Tensor of energies of the system (typically shape (n,)).
-        lambdas_full: Tensor of couplings between states (shape compatible with Hamiltonian).
+        couplings: Tensor of couplings between states (shape compatible with Hamiltonian).
         omega_d: Drive frequency.
         floquet_cutoff: Fourier cutoff used in Floquet formalism.
 
@@ -178,7 +178,7 @@ def floquet_propagator_square_sequence(
             rabi,
             phase,
             energies,
-            lambdas_full,
+            couplings,
             omega_d,
             floquet_cutoff,
             time=duration
@@ -197,7 +197,7 @@ if __name__ == "__main__":
         rabi_frequencies=torch.tensor([10.05, 0.10, 0.05], dtype=torch.complex128, device=device),
         phases=torch.tensor([0.1231, np.pi/2, np.pi], dtype=torch.complex128, device=device),
         energies=torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], dtype=torch.complex128, device=device),
-        lambdas_full=torch.tensor([
+        couplings=torch.tensor([
                 [0., 1., 0., 0., 0., 0.],
                 [1., 0., 1., 0., 0., 0.],
                 [0., 1., 0., 1., 0., 0.],
@@ -221,7 +221,7 @@ if __name__ == "__main__":
         phases=test_params["phases"].cpu().numpy(),
         pulse_durations=time_pulse_durations, 
         epsilon=test_params["energies"].cpu().numpy(),
-        lambda_matrix=test_params["lambdas_full"].cpu().numpy(),
+        lambda_matrix=test_params["couplings"].cpu().numpy(),
         omega_d=omega_d,
         options={
             "atol": 1e-12,

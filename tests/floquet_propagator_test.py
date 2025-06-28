@@ -13,7 +13,7 @@ test_cases = [
     {
         "desc": "Two-level system, weak drive",
         "energies": [0.0, 1.0],
-        "lambdas_full": [[0.0, 1.0], [1.0, 0.0]],
+        "couplings": [[0.0, 1.0], [1.0, 0.0]],
         "rabi_frequencies": [0.01],
         "phases": [0.0],
         "pulse_durations": [10.0],       # 10 s
@@ -23,7 +23,7 @@ test_cases = [
     {
         "desc": "Two-level system, strong drive",
         "energies": [0.0, 1.0],
-        "lambdas_full": [[0.0, 1.0], [1.0, 0.0]],
+        "couplings": [[0.0, 1.0], [1.0, 0.0]],
         "rabi_frequencies": [10.0],
         "phases": [0.0],
         "pulse_durations": [10.0],
@@ -33,7 +33,7 @@ test_cases = [
     {
         "desc": "Three-level system, detuned drive",
         "energies": [0.0, 1.0, 2.1],
-        "lambdas_full": [
+        "couplings": [
             [0.0, 1.0, 0.0],
             [1.0, 0.0, 1.0],
             [0.0, 1.0, 0.0],
@@ -47,7 +47,7 @@ test_cases = [
     {
         "desc": "Three-level system, very short pulse",
         "energies": [0.0, 1.0, 2.0],
-        "lambdas_full": [
+        "couplings": [
             [0.0, 0.8, 0.0],
             [0.8, 0.0, 1.0],
             [0.0, 1.0, 0.0],
@@ -61,7 +61,7 @@ test_cases = [
     {
         "desc": "Six-level ladder, multi-pulse",
         "energies": [0., 1., 2., 3., 4., 5.],
-        "lambdas_full": [
+        "couplings": [
             [0., 1., 0., 0., 0., 0.],
             [1., 0., 1., 0., 0., 0.],
             [0., 1., 0., 1., 0., 0.],
@@ -78,7 +78,7 @@ test_cases = [
     {
         "desc": "Three-level degenerate energies",
         "energies": [0.0, 0.0, 0.0],
-        "lambdas_full": [
+        "couplings": [
             [0.0, 1.0, 1.0],
             [1.0, 0.0, 1.0],
             [1.0, 1.0, 0.0],
@@ -92,7 +92,7 @@ test_cases = [
     {
         "desc": "Four-level system, non-uniform durations",
         "energies": [0.0, 1.0, 1.8, 3.0],
-        "lambdas_full": [
+        "couplings": [
             [0.0, 0.9, 0.0, 0.0],
             [0.9, 0.0, 0.9, 0.0],
             [0.0, 0.9, 0.0, 0.9],
@@ -107,7 +107,7 @@ test_cases = [
     {
         "desc": "Zero-duration pulse (identity check)",
         "energies": [0.0, 1.0],
-        "lambdas_full": [[0.0, 1.0], [1.0, 0.0]],
+        "couplings": [[0.0, 1.0], [1.0, 0.0]],
         "rabi_frequencies": [0.5],
         "phases": [0.0],
         "pulse_durations": [0.0],        # should produce identity
@@ -117,7 +117,7 @@ test_cases = [
     {
         "desc": "Uncoupled three-level system",
         "energies": [0.0, 1.0, 2.0],
-        "lambdas_full": [
+        "couplings": [
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
@@ -131,7 +131,7 @@ test_cases = [
     {
         "desc": "Very long pulse (aliasing edge)",
         "energies": [0.0, 1.0],
-        "lambdas_full": [[0.0, 1.0], [1.0, 0.0]],
+        "couplings": [[0.0, 1.0], [1.0, 0.0]],
         "rabi_frequencies": [0.1],
         "phases": [0.0],
         "pulse_durations": [100.0],      # long compared to cutoff
@@ -149,7 +149,7 @@ def test_propagator_accuracy(case):
         phases=case['phases'],
         pulse_durations=case['pulse_durations'],
         energies=case['energies'],
-        lambdas_full=case['lambdas_full'],
+        couplings=case['couplings'],
         omega_d=case['omega_d'],
         floquet_cutoff=200
     )
