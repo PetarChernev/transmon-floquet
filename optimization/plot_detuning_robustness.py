@@ -12,7 +12,7 @@ from transmon.transmon_dynamics_qutip import pulse_sequence_qutip
 omega_values = np.linspace(0.95, 1.05, 100)
 fidelities = []
 
-target = np.array([[1, 1], [1, -1]]) / np.sqrt(2)
+target = np.array([[0, 1], [1, 0]])
 
 n_levels = 6
 EJ_EC_ratio = TransmonCore.find_EJ_EC_for_anharmonicity(-0.0429)
@@ -20,11 +20,14 @@ energies, couplings = TransmonCore.compute_transmon_parameters(
     n_levels, n_charge=30, EJ_EC_ratio=EJ_EC_ratio
 )
 
-rabi_frequencies = np.array([0.95107027, 0.79220659, 1.0358085,  1.05042276, 1.0133318,  0.87797412, 1.02144238, 0.64034026])
-phases = np.array([2.15531313, 4.82939254, 3.9763329,  1.28857258, 4.64092377, 3.82731991, 1.45256058, 4.74845489])
-pulse_durations = [7, 1, 7, 1, 7, 1, 7, 1,]
+rabi_frequencies = np.array([0.40005119, -0.25700129,  0.17662924,  0.29273975,  0.08082814,
+        0.42413851,  0.43772231, -0.37279788  ]) / 7000
+phases = np.array([0.74597256,  1.58      ,
+       -0.91019485, -1.06866579, -0.18841594,  0.69103507,  0.50755041,
+        1.58])
+pulse_durations = np.array([140.0 / 8] * 8)
 
-target = np.array([[1, 1], [1, -1]]) / np.sqrt(2)
+target = np.array([[0, 1], [1, 0]])
 
 
 def get_fidelity(omega):
@@ -37,9 +40,9 @@ def get_fidelity(omega):
         couplings, 
         omega, 
         options={
-            "atol": 1e-8,
-            "rtol": 1e-8,
-            "nsteps": 20000
+            "atol": 1e-6,
+            "rtol": 1e-6,
+            "nsteps": 200000
         },
     )
     # Convert to NumPy array if it's a Qobj
@@ -55,6 +58,5 @@ with Pool(20) as pool:
 plt.figure()
 plt.plot(omega_values, fidelities)
 plt.xlabel('Drive frequency ω_d')
-plt.ylabel('Transfer probability |⟨1|U|0⟩|^2')
-plt.title('Transfer probability vs. drive frequency')
+plt.title('Fidelity vs. drive frequency')
 plt.show()

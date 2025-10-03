@@ -1,19 +1,11 @@
 """robust_pulse_optimizer.py
-
-Refactored module for robust single‑qubit gate optimisation on a transmon
-with **adaptive precision** and **restart strategies**.
-
 The optimisation logic is split into two layers:
 
 * **`_PulseGDRun`** – self‑contained gradient‑descent engine that starts from a
-  given parameter set and runs until one of the following conditions holds:
-
-  * **single‑precision phase:** *switch‑criterion* **OR** plateau reached
-  * **double‑precision phase:** all detunings meet `fidelity_target` **OR** plateau reached
+  given parameter set and runs until all detunings meet `fidelity_target` **OR** plateau reached
 
   On exit it returns the best loss, associated fidelity/leak vectors, final
-  parameters, whether convergence was achieved, and whether precision was
-  upgraded.
+  parameters and whether convergence was achieved.
 
 * **`RandomRobustPulseOptimizer`** – high‑level scheduler that repeatedly draws
   **random** pulse durations / Rabi amplitudes / phases, launches a
@@ -33,7 +25,6 @@ opt = RandomRobustPulseOptimizer(
     )
 
 best = opt.run(max_steps_per_restart=10_000)
-print(best["fidelities"], best["double_precision"])
 ```
 """
 from __future__ import annotations
@@ -59,11 +50,8 @@ __all__ = ["RandomRobustPulseOptimizer"]
 # Gradient‑descent engine – single run, no restarts
 ################################################################################
 class _PulseGDRun:
-    """Encapsulates a *single* gradient‑descent trajectory.
-
-    The run obeys the state machine described in the module doc‑string:
-
-        single‑precision → (switch OR plateau) → double‑precision → (success OR plateau)
+    """
+    Encapsulates a *single* gradient‑descent trajectory.
     """
 
     def __init__(
@@ -76,33 +64,45 @@ class _PulseGDRun:
         desc: str = "",
     ) -> None:
         self.p = parent  # shortcut to configuration/state in the parent optimiser
-        self.rabi = rabi
+        self.raw_rabi = torch.nn.Parameter(
+            torch.log(torch.exp(rabi) - 1.0)
+        )
         self.phases = phases
         self.pulse_durations = pulse_durations
         self.max_steps = max_steps
         self.desc = desc or "GD run"
-
-        # optimiser / scheduler are created here so that they survive precision switch
-        self.opt, self.sched = self._new_optimisers()
 
         # bookkeeping
         self.best_loss = float("inf")
         self.best_stats: List[Tuple[float, float]] | None = None
         self.best_rabi: Tensor | None = None
         self.best_phases: Tensor | None = None
-        self.best_precision_double = False
+        self.opt = torch.optim.Adam(
+            [self.raw_rabi, self.phases],
+            lr=self.p.lr,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+        )
+        self.sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.opt,
+            mode="min",
+            factor=0.5,
+            patience=10,
+            threshold=1e-4,
+        )
 
     # ------------------------------------------------------------------ public
     def run(self) -> Dict:
         plateau_counter, prev_loss = 0, float("inf")
         bar = tqdm(range(self.max_steps), desc=self.desc, leave=False, position=0)   
         info_bar = tqdm(total=0, position=1, bar_format='{desc}', leave=False)          # line below the main bar
+        plateaued = False
         for step in bar:
             # forward & backward -------------------------------------------------
             self.opt.zero_grad()
             loss, stats, propagators = self._loss_and_stats()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_([self.rabi, self.phases], 5.0)
+            torch.nn.utils.clip_grad_norm_([self.raw_rabi, self.phases], 5.0)
             self.opt.step()
             self.sched.step(loss)
 
@@ -110,18 +110,15 @@ class _PulseGDRun:
             if loss.item() < self.best_loss:
                 self.best_loss = loss.item()
                 self.best_stats = stats
-                self.best_rabi = self.rabi.detach().clone()
+                self.best_rabi = torch.nn.functional.softplus(self.raw_rabi).detach()
                 self.best_phases = self.phases.detach().clone()
-                self.best_precision_double = self.p._precision_switched
 
             # ---------- adaptive plateau bookkeeping -------------------------
             central_idx = self.p._central_idx
             fid_central = 1.0 - stats[central_idx][1]
             # aggressive far from 1, gentle near 1
             patience_eff = max(20, int(self.p.plateau_patience / (1 - fid_central + 1e-3)))
-            if not self.p._precision_switched:
-                # double‑precision phase: plateau patience is disabled
-                patience_eff = min(300, patience_eff)
+            patience_eff = min(1000, patience_eff)
             tol_eff      = self.p.plateau_tol * (1 + loss.item()) * (1 + fid_central)     
 
             improvement = prev_loss - loss.item()
@@ -135,58 +132,34 @@ class _PulseGDRun:
             bar.set_postfix(loss=f"{self.best_loss:.3e}", F_central=f"{fid_central:.4f}")      # keep bar compact
             info_bar.display(f"tol={tol_eff:.2e}  patience_eff={patience_eff}  plateau={plateau_counter}\r")  # prints on its own line
 
-            # ----- control flow ------------------------------------------------
-            if not self.p._precision_switched:
-                # single‑precision phase
-                if self.p._should_switch_precision(stats, propagators):
-                    self._switch_to_double()
-                    plateau_counter = 0  # reset
-                    bar.write("↻ Switched to double precision …")
-                    continue  # continue optimisation in higher precision
-                if plateau_counter >= patience_eff:
-                    break  # plateau – give up this run
-            else:
-                # double‑precision phase
-                if self.p._success(stats):
-                    return self._finish(converged=True, step=step)
-                if plateau_counter >= patience_eff:
-                    break  # plateau – give up this run
-            # end for step
-        return self._finish(converged=False, step=self.max_steps)
+
+            if self.p._success(stats):
+                return self._finish(converged=True, plateaued=plateaued, step=step)
+            if plateau_counter >= patience_eff:
+                plateaued = True
+                break  # plateau – give up this run
+        return self._finish(converged=False, plateaued=plateaued, step=self.max_steps)
 
     # ---------------------------------------------------------------- private
-    def _finish(self, converged: bool, step: int) -> Dict:
+    def _finish(self, converged: bool, plateaued:bool, step: int) -> Dict:
         leak_tensor = torch.tensor([s[0] for s in self.best_stats])
         F_tensor = 1.0 - torch.tensor([s[1] for s in self.best_stats])
         return {
             "converged": converged,
+            "plateaued": plateaued,
             "loss": self.best_loss,
             "leak": leak_tensor.tolist(),
             "fidelities": F_tensor.tolist(),
-            "rabi": self.best_rabi.cpu().tolist(),
+            "rabi": torch.nn.functional.softplus(self.raw_rabi).cpu().tolist(),
             "phases": self.best_phases.cpu().tolist(),
             "pulse_durations": self.pulse_durations.cpu().tolist(),
-            "double_precision": self.best_precision_double,
             "steps": step,
         }
 
     def _loss_and_stats(self):
-        return self.p._loss_and_stats(self.rabi, self.phases, self.pulse_durations)
+        rabi = torch.nn.functional.softplus(self.raw_rabi)
+        return self.p._loss_and_stats(rabi, self.phases, self.pulse_durations)
 
-    def _switch_to_double(self):
-        self.rabi, self.phases = self.p._switch_to_double(self.rabi, self.phases)
-        self.opt, self.sched = self._new_optimisers()
-
-    def _new_optimisers(self):
-        opt = torch.optim.Adam([self.rabi, self.phases], lr=self.p.lr)
-        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            opt,
-            mode="min",
-            factor=0.5,
-            patience=self.p.plateau_patience // 4,
-            cooldown=10,
-        )
-        return opt, sched
 
 ################################################################################
 # Base class – shared math utilities / configuration
@@ -209,7 +182,7 @@ class _BasePulseOptimizer:
 
     # ===== Robustness settings ===============================================
     detunings: Sequence[float] = (0.95, 0.98, 1.0, 1.02, 1.05)
-    weights: Sequence[float] = (1.0, 10.0, 100.0, 10.0, 1.0)
+    weights: Sequence[float] = (1.0, 5.0, 10.0, 5.0, 1.0)
     fidelity_target: float = 0.999
     n_derivs: int = 0
     deriv_weights: Sequence[float] = (0.1, 1e-4)
@@ -221,17 +194,15 @@ class _BasePulseOptimizer:
 
     # ===== Runtime / HW ======================================================
     device: torch.device | str = ("cuda" if torch.cuda.is_available() else "cpu")
-    dtype_real: torch.dtype = torch.float32
-    dtype_complex: torch.dtype = torch.complex64
+    # device: torch.device | str = "cpu"
+    dtype_real: torch.dtype = torch.float64
+    dtype_complex: torch.dtype = torch.complex128
     floquet_cutoff: int = 20
     seed: int | None = None
-
-    auto_precision: bool = True
 
     # ===== internal ----------------------------------------------------------
     energies: Tensor = field(init=False, repr=False)
     couplings: Tensor = field(init=False, repr=False)
-    _precision_switched: bool = field(init=False, default=False, repr=False)
     _central_idx: int = field(init=False, repr=False)
 
     # ---------------------------------------------------------------- public
@@ -287,18 +258,6 @@ class _BasePulseOptimizer:
     def _omegas_detunings_tensor(self) -> Tensor:
         return torch.tensor(self.detunings, dtype=self.dtype_real, device=self.device, requires_grad=self.n_derivs > 0)
 
-    def _should_switch_precision(self, stats: List[Tuple[float, float]], propagators: Tensor) -> bool:
-        if self._precision_switched:
-            return False
-        fidelities = 1.0 - torch.tensor([infid for (_, infid) in stats], dtype=self.dtype_real, device=self.device)
-        return torch.all(fidelities > .9).item()
-    
-    def _switch_to_double(self, rabi: Tensor, phases: Tensor) -> Tuple[Tensor, Tensor]:
-        self.dtype_real, self.dtype_complex, self._precision_switched = torch.float64, torch.complex128, True
-        self.energies = self.energies.double()
-        self.couplings = self.couplings.to(torch.complex128)
-        self.U_target = self.U_target.to(torch.complex128)
-        return torch.nn.Parameter(rabi.detach().double()), torch.nn.Parameter(phases.detach().double())
 
     def _success(self, stats: List[Tuple[float, float]]) -> bool:
         infid_tensor = torch.tensor([s[1] for s in stats])

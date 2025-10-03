@@ -20,8 +20,10 @@ from tqdm.auto import tqdm
 
 # Import from the base module
 from gradient_descent_robustness import _BasePulseOptimizer, _PulseGDRun
+from utils.target import qubit_rotation
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 @dataclass
 class Individual:
     """Represents a single individual in the genetic algorithm population."""
@@ -32,7 +34,7 @@ class Individual:
     leak: List[float] = field(default_factory=list)
     fidelities: List[float] = field(default_factory=list)
     converged: bool = False
-    double_precision: bool = False
+    plateaued: bool = False
     
     def clone(self) -> Individual:
         """Create a deep copy of this individual."""
@@ -44,7 +46,7 @@ class Individual:
             leak=self.leak.copy() if self.leak else [],
             fidelities=self.fidelities.copy() if self.fidelities else [],
             converged=self.converged,
-            double_precision=self.double_precision
+            plateaued=self.plateaued,
         )
         
     def to_json(self) -> Dict:
@@ -57,9 +59,21 @@ class Individual:
             "leak": self.leak,
             "fidelities": self.fidelities,
             "converged": self.converged,
-            "double_precision": self.double_precision
+            "plateaued": self.plateaued,
         }
 
+    def from_json(data: Dict) -> Individual:
+        """Create an individual from a JSON dictionary."""
+        return Individual(
+            rabi=torch.tensor(data["rabi"], dtype=torch.float32, device=device),
+            phases=torch.tensor(data["phases"], dtype=torch.float32, device=device),
+            pulse_durations=torch.tensor(data["pulse_durations"], dtype=torch.int64, device=device),
+            fitness=data["fitness"],
+            leak=data.get("leak", []),
+            fidelities=data.get("fidelities", []),
+            converged=data.get("converged", False),
+            plateaued=data.get("plateaued", False),
+        )
 
 @dataclass
 class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
@@ -69,9 +83,10 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
     population_size: int = 20
     n_generations: int = 50
     elite_size: int = 4
+    culling_fraction: float = 0.2 
     tournament_size: int = 3
-    crossover_prob: float = 0.8
-    mutation_prob: float = 0.2
+    crossover_prob: float = 0.2
+    mutation_prob: float = 0.8
     mutation_strength: float = 0.1
     pulse_mutation_prob: float = 0.1
     candidates: List[Individual] = field(default_factory=list)
@@ -79,12 +94,20 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
     # Gradient descent parameters per individual
     max_steps_per_individual: int = 2000
     
-    def run(self) -> Dict:
+    def run(self, starting_generation=None) -> Dict:
         """Run the genetic algorithm optimization."""
         self._prepare_shared()
         
         # Initialize population
-        population = self._initialize_population()
+        if not starting_generation:
+            starting_generation = 0
+            population = self._initialize_population()
+        else:
+            with open(f"candidates/generation_{starting_generation}.json", "r") as f:
+                population_data = json.load(f)
+            population = [Individual.from_json(data) for data in population_data]
+        min_fitness = min(ind.fitness for ind in population)
+        population = [p for p in population if p.fitness <= min_fitness + 1e-6]
         
         # Track best individual across all generations
         global_best: Optional[Individual] = None
@@ -93,7 +116,7 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
         with tqdm(range(generations), desc="Generations") as pbar:
             for generation in pbar:
                 # Optimize each individual with gradient descent
-                population = self._optimize_population(population, generation)
+                population = self._optimize_population(population, generation + starting_generation)
                 
                 # Update global best
                 best_in_gen = min(population, key=lambda x: x.fitness)
@@ -126,7 +149,6 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
             "rabi": global_best.rabi.cpu().tolist(),
             "phases": global_best.phases.cpu().tolist(),
             "pulse_durations": global_best.pulse_durations.cpu().tolist(),
-            "double_precision": global_best.double_precision,
             "generation": generation,
         }
     
@@ -149,14 +171,6 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
         
         
         for i, individual in enumerate(population):
-            # Reset precision for each run
-            self._precision_switched = False
-            self.dtype_real = torch.float32
-            self.dtype_complex = torch.complex64
-            self.energies = self.energies.float()
-            self.couplings = self.couplings.to(torch.complex64)
-            self.U_target = self.U_target.to(torch.complex64)
-            
             # Create parameters for gradient descent
             rabi_param = torch.nn.Parameter(individual.rabi.clone())
             phases_param = torch.nn.Parameter(individual.phases.clone())
@@ -164,7 +178,7 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
             # Run gradient descent
             gd = _PulseGDRun(
                 parent=self,
-                rabi=rabi_param,
+                rabi=individual.rabi,
                 phases=phases_param,
                 pulse_durations=individual.pulse_durations,
                 max_steps=self.max_steps_per_individual,
@@ -175,14 +189,13 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
             
             # Create optimized individual
             opt_individual = Individual(
-                rabi=torch.tensor(result["rabi"], dtype=torch.float32, device=self.device),
+                rabi=individual.rabi,
                 phases=torch.tensor(result["phases"], dtype=torch.float32, device=self.device),
                 pulse_durations=individual.pulse_durations,
                 fitness=result["loss"],
                 leak=result["leak"],
                 fidelities=result["fidelities"],
                 converged=result["converged"],
-                double_precision=result["double_precision"]
             )
             
             optimized_population.append(opt_individual)
@@ -200,10 +213,14 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
         """Create next generation through selection, crossover, and mutation."""
         # Sort by fitness (lower is better)
         
-        sorted_pop = sorted(population, key=lambda x: x.fitness)
+        sorted_pop = sorted(population, key=lambda x: x.fitness)[:int(self.population_size * self.culling_fraction)]
         
         # Elite selection
         new_population = [ind.clone() for ind in sorted_pop[:self.elite_size]]
+        while len(population) < self.tournament_size:
+            # Randomly select individuals to fill the tournament size
+            ind = random.choice(population)
+            population.append(ind.clone())
         
         # Fill rest of population
         while len(new_population) < self.population_size:
@@ -212,15 +229,16 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
             parent2 = self._tournament_selection(population)
             
             # Crossover
-            if random.random() < self.crossover_prob:
+            crossover = random.random() < self.crossover_prob
+            if crossover:
                 child1, child2 = self._crossover(parent1, parent2)
             else:
                 child1, child2 = parent1.clone(), parent2.clone()
             
             # Mutation
-            if random.random() < self.mutation_prob:
+            if (not crossover and parent1.plateaued) or random.random() < self.mutation_prob:
                 child1 = self._mutate(child1)
-            if random.random() < self.mutation_prob:
+            if (not crossover and parent2.plateaued) or random.random() < self.mutation_prob:
                 child2 = self._mutate(child2)
             
             # Add to new population
@@ -314,6 +332,10 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
         mutated.phases = (mutated.phases + phase_noise) % (2 * torch.pi)
         
         # Mutate pulse durations (discrete)
+
+        if self.pulse_mutation_prob == 0:
+            # No pulse mutation, just return the mutated individual
+            return mutated
         for i in range(len(mutated.pulse_durations)):
             pulse_mutation_chance = random.random()
             if pulse_mutation_chance < self.pulse_mutation_prob / len(mutated.pulse_durations):
@@ -347,13 +369,13 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
     
     def _random_initial_params(self) -> Tuple[Tensor, Tensor, Tensor]:
         """Generate random initial parameters."""
-        pulse_durations = torch.tensor(
-            random.choices(self.pulse_length_options, k=self.n_pulses),
-            dtype=torch.int64,
+        pulse_durations = torch.ones(
+            self.n_pulses,
+            dtype=torch.int8,
             device=self.device,
         )
         
-        rabi_init = 0.75 + 0.5 * torch.rand(
+        rabi_init = torch.ones(
             self.n_pulses, dtype=torch.float32, device=self.device
         )
         phase_init = 2.0 * torch.pi * torch.rand(
@@ -365,28 +387,48 @@ class GeneticRobustPulseOptimizer(_BasePulseOptimizer):
 
 # Example usage
 if __name__ == "__main__":
+    # optimizer = GeneticRobustPulseOptimizer(
+    #     n_pulses=13,
+    #     detunings=[0.95, 0.98, 1.00, 1.02, 1.05],
+    #     fidelity_target=0.95,
+    #     plateau_patience=100,
+    #     plateau_tol=.001,
+    #     # Genetic algorithm parameters
+    #     population_size=5,
+    #     n_generations=None,
+    #     elite_size=4,
+    #     culling_fraction=0.2,
+    #     tournament_size=3,
+    #     crossover_prob=0.8,
+    #     mutation_prob=0.3,
+    #     mutation_strength=0.1,
+    #     pulse_mutation_prob=0,
+    #     max_steps_per_individual=2000,
+    #     U_target=torch.tensor([[0, 1], [1, 0]], dtype=torch.complex128, device=device),
+    # )
     optimizer = GeneticRobustPulseOptimizer(
         n_pulses=13,
-        detunings=[0.95, 0.98, 1.00, 1.02, 1.05],
-        fidelity_target=0.95,
-        plateau_patience=20,
-        plateau_tol=.01,
+        detunings=[0.98, 0.99, 1.00, 1.01, 1.02],
+        fidelity_target=0.999,
+        plateau_patience=1,
+        plateau_tol=.1,
         # Genetic algorithm parameters
-        population_size=20,
+        population_size=5,
         n_generations=None,
         elite_size=4,
+        culling_fraction=0.2,
         tournament_size=3,
         crossover_prob=0.8,
         mutation_prob=0.3,
         mutation_strength=0.1,
-        pulse_mutation_prob=0.15,
+        pulse_mutation_prob=0,
         max_steps_per_individual=2000,
+        U_target=torch.tensor([[0, 1], [1, 0]], dtype=torch.complex128, device=device),
     )
-    
     with open("candidates.pkl", "wb+") as f:
         pickle.dump(optimizer.candidates, f)
     
-    best_solution = optimizer.run()
+    best_solution = optimizer.run(starting_generation=10)
     print("\nBest solution found:")
     print(f"Converged: {best_solution['converged']}")
     print(f"Loss: {best_solution['loss']:.6e}")
